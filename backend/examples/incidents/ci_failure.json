@@ -1,0 +1,18 @@
+{
+  "id": "ci-failure-001",
+  "title": "CI fails with ModuleNotFoundError in service layer",
+  "description": "A recent refactor moved repository imports and CI now fails during bootstrap.",
+  "logs": "Traceback (most recent call last):\n  File \"app/service.py\", line 3, in <module>\n    from app.repository import UserRepository\n  File \"app/repository.py\", line 1, in <module>\n    import sqlalchemy\nModuleNotFoundError: No module named 'sqlalchemy'\n",
+  "changed_files": [
+    "app/service.py",
+    "requirements.txt"
+  ],
+  "suspected_modules": [
+    "app.service",
+    "app.repository"
+  ],
+  "metadata": {
+    "pipeline": "github-actions",
+    "branch": "main"
+  }
+}

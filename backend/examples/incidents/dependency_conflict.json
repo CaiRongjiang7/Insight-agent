@@ -1,0 +1,15 @@
+{
+  "id": "dep-conflict-001",
+  "title": "Dependency resolution fails after adding analytics client",
+  "description": "The installation step fails because the new analytics package conflicts with the pinned HTTP client version.",
+  "logs": "ERROR: Cannot install analytics-client==2.4.0 and httpx==0.24.1 because these package versions have conflicting dependencies.\nThe conflict is caused by:\n    analytics-client 2.4.0 depends on httpx>=0.27\n    The user requested httpx==0.24.1\nERROR: ResolutionImpossible\n",
+  "changed_files": [
+    "requirements.txt"
+  ],
+  "suspected_modules": [
+    "requirements"
+  ],
+  "metadata": {
+    "pipeline": "gitlab-ci"
+  }
+}
