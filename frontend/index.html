@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN" class="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>踩坑知识库沉淀平台 — Bug Review Pipeline</title>
+    <style>
+      /* 防止暗黑模式闪烁 */
+      html { background: #f8fafc; }
+    </style>
+    <script>
+      // 强制清除暗黑模式残留，在 Vue 加载前执行
+      try { localStorage.removeItem("vueuse-color-scheme"); } catch(e) {}
+      document.documentElement.classList.remove("dark");
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+  </html>
