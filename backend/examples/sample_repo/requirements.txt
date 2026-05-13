@@ -1,0 +1,3 @@
+fastapi==0.112.0
+httpx==0.24.1
+analytics-client==2.4.0

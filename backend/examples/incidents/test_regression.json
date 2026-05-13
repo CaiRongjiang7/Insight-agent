@@ -1,0 +1,17 @@
+{
+  "id": "test-regression-001",
+  "title": "Service contract regression breaks unit test",
+  "description": "A new branch changed the service response shape and the test suite now fails.",
+  "logs": "FAILED tests/test_service.py::test_user_summary - AssertionError: expected name field in response\nTraceback (most recent call last):\n  File \"tests/test_service.py\", line 8, in test_user_summary\n    assert \"name\" in payload\n  File \"app/service.py\", line 10, in get_user_summary\n    return {\"userName\": record[\"name\"], \"id\": record[\"id\"]}\nAssertionError\n",
+  "changed_files": [
+    "app/service.py",
+    "tests/test_service.py"
+  ],
+  "suspected_modules": [
+    "app.service",
+    "tests.test_service"
+  ],
+  "metadata": {
+    "pipeline": "pytest"
+  }
+}
