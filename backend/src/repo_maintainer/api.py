@@ -18,6 +18,8 @@ from .frontend_service import FrontendDataService
 from .platform import RepoAutonomyPlatform
 from .pr_listener import PRListener
 from .review_workflow import ReviewWorkflowEngine
+from .retrospective_api import mount_retrospective_api
+from .retrospective_runtime import configure_app_pipeline
 from .wiki_publisher import WikiPublisherService
 
 
@@ -193,10 +195,33 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
     app.state.review_workflow = review_workflow
     app.state.wiki_publisher = wiki_publisher
     app.state.pr_listener = pr_listener
+    configure_app_pipeline(app)
+    mount_retrospective_api(app)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        return {"ok": True, "runtime_backend": platform.config.runtime.backend}
+        pipeline = getattr(app.state, "retrospective_pipeline", None)
+        pipeline_enabled = pipeline is not None
+        pipeline_error = getattr(app.state, "retrospective_error", "")
+        connector_status: dict[str, Any] = {}
+        if pipeline is not None:
+            try:
+                connector_status = pipeline.connector_status()
+            except Exception as exc:
+                pipeline_error = str(exc)
+        ready = bool(pipeline_enabled and connector_status.get("ready") and not pipeline_error)
+        return {
+            "ok": ready if pipeline_enabled else not bool(pipeline_error),
+            "runtime_backend": platform.config.runtime.backend,
+            "retrospective_pipeline": "ready" if ready else "disabled" if not pipeline_enabled and not pipeline_error else "error",
+            "retrospective_error": pipeline_error,
+            "connectors": connector_status,
+        }
+
+    @app.get("/api/liveness")
+    def liveness() -> dict[str, bool]:
+        """Process-level probe; dependency readiness remains available at /api/health."""
+        return {"ok": True}
 
     @app.get("/api/dashboard/overview")
     def dashboard_overview(days: int = Query(default=7, ge=1, le=90)) -> dict[str, Any]:
@@ -685,7 +710,7 @@ def create_app(config: PlatformConfig | None = None) -> FastAPI:
             results.append({
                 "entry": entry_data or {
                     "id": entry.id, "name": entry.name, "description": entry.description,
-                    "hit_rate": entry.hit_rate, "success_rate": entry.success_rate,
+                    "hit_rate": entry.success_rate, "success_rate": entry.success_rate,
                     "usage_count": entry.usage_count, "last_used_at": entry.last_used_at or "",
                     "triggers": entry.triggers, "error_types": entry.error_types,
                     "action_template": entry.action_template, "keywords": entry.keywords,

@@ -295,7 +295,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { platformApi } from "@/api/platform";
-import type { BugReport, ReviewAction, RepoRecord } from "@/types/platform";
+import type { BugReport, BugReviewDocument, ReviewAction, RepoRecord } from "@/types/platform";
 import ConsoleLayout from "@/components/layout/ConsoleLayout.vue";
 import PanelCard from "@/components/common/PanelCard.vue";
 import StatusTag from "@/components/common/StatusTag.vue";
@@ -420,22 +420,22 @@ async function triggerExtraction() {
 }
 
 async function saveEdits() {
-  if (!selectedReport.value) return;
+  if (!selectedReport.value?.review_document) return;
   savingEdits.value = true;
   try {
-    const doc = {
+    const doc: BugReviewDocument = {
       ...selectedReport.value.review_document,
       title: editForm.title,
       root_cause: {
-        ...(selectedReport.value.review_document?.root_cause || {}),
+        ...selectedReport.value.review_document.root_cause,
         content: editForm.root_cause,
       },
       fix_solution: editForm.fix_solution,
       prevention: editForm.prevention,
       keywords: editForm.keywords.split(",").map((k) => k.trim()).filter(Boolean),
       impact: {
-        ...(selectedReport.value.review_document?.impact || {}),
-        severity: editForm.severity,
+        ...selectedReport.value.review_document.impact,
+        severity: editForm.severity as BugReviewDocument["impact"]["severity"],
         scope: editForm.impact_scope,
       },
     };

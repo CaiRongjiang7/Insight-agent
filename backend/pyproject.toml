@@ -15,20 +15,35 @@ authors = [
 dependencies = [
   "fastapi>=0.115.0,<1.0.0",
   "uvicorn>=0.32.0,<1.0.0",
+  "psycopg[binary]>=3.2.0",
+  "pgvector>=0.3.0",
+  "openai>=2.0.0,<3.0.0",
+  "redis>=5.2.0,<7.0.0",
+  "celery[redis]>=5.4.0,<6.0.0",
+]
+
+[project.optional-dependencies]
+legacy-retrieval = [
   "faiss-cpu>=1.8.0",
   "hnswlib>=0.8.0",
   "sentence-transformers>=5.0.0",
   "pymilvus>=2.4.0",
-  "psycopg[binary]>=3.2.0",
-  "pgvector>=0.3.0",
+]
+dev = [
+  "httpx>=0.27.0,<1.0.0",
+  "pytest>=8.3.0,<9.0.0",
 ]
 
 [project.scripts]
 repo-agent = "repo_maintainer.cli:main"
 repo-agent-api = "repo_maintainer.api:run_dev_server"
+repo-agent-migrate = "repo_maintainer.retrospective_migrate:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+repo_maintainer = ["*.sql"]

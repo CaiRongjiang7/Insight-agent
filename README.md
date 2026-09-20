@@ -1,190 +1,219 @@
-# Bug 复盘知识库 — Bug Review Knowledge Pipeline
+# 研发问题复盘 Agent（小组/部门核心版）
 
-![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)
-![Vue](https://img.shields.io/badge/Vue-3-42b883?logo=vue.js&logoColor=white)
-![Vite](https://img.shields.io/badge/Vite-Frontend-646CFF?logo=vite&logoColor=white)
-![Element Plus](https://img.shields.io/badge/Element_Plus-UI-409EFF?logo=element&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green)
+面向合并 PR 和手工问题的证据化复盘工作流：自动汇聚 GitHub、飞书和历史知识上下文，生成带原文引用的结构化复盘，经人工审核后发布到飞书 Wiki，并回流 PostgreSQL/pgvector 供后续问题召回。
 
-接收 GitHub PR → LLM 自动提取根因、修复方案和预防措施 → 人工审核 → 沉淀为团队可检索的知识条目。
+## 核心闭环
 
----
-
-## 核心流程
-
-```
-GitHub PR/Webhook          LLM 结构化抽取          人工审核             知识库沉淀
-     │                         │                    │                    │
-┌────▼────┐  触发      ┌───────▼──────┐   draft  ┌──▼──┐  approved  ┌──▼──────┐
-│ PR #42  │──────────▶│ Bug Review    │─────────▶│ 审核  │──────────▶│ 知识条目  │
-│ fix(rag)│ commit SHA│ Document      │  pending │      │ published │· 可检索  │
-└─────────┘           │· 根因         │         └──────┘           │· 关联PR  │
-                      │· 修复方案     │◄──────── rejected ────────│· 关键词  │
-                      │· 预防措施     │                            └─────────┘
-                      └──────────────┘
+```text
+GitHub merged PR Webhook / 手工创建
+  -> GitHub PR、commit、diff、评论和 CI 日志
+  -> 飞书指定群消息、文档上下文
+  -> PostgreSQL 全文检索 + pgvector 历史案例召回
+  -> 上下文去重、日志/差异裁剪和预算控制
+  -> OpenAI Responses API 结构化复盘
+  -> Evidence ID 与原文引用硬校验
+  -> 人工编辑、通过或驳回
+  -> 飞书 Wiki 发布
+  -> 审核版本分块、向量化并回流知识库
 ```
 
-四条审核状态覆盖完整生命周期：
+核心页面位于 `/retrospective`。原有仓库自治和演示页面仍保留，但不作为本次复盘闭环的事实数据源。
 
-| 状态 | 对应 PR | 示例 |
-|------|---------|------|
-| `draft` | 刚接收 | PR #1 fix(style): CSS 样式回归 |
-| `approved` | 已通过尚未发布 | PR #1 fix(editor): 运行按钮空参数 |
-| `rejected` | 已驳回 | PR #1 fix(applist): 重复创建示例应用 |
-| `published` | 已发布到知识库 | PR #3 fix(rag): 上传文件报500 |
+## 技术实现
 
-## 架构
+| 能力 | 实现 |
+| --- | --- |
+| API / 状态机 | FastAPI、Pydantic，固定状态迁移 |
+| 异步任务 | Celery + Redis |
+| 事实存储 | PostgreSQL |
+| 语义检索 | pgvector + PostgreSQL 全文检索加权融合 |
+| 模型生成 | 官方 OpenAI Python SDK、Responses API、Function Calling + Pydantic 校验 |
+| 外部上下文 | GitHub REST API、飞书开放平台 |
+| 管理台 | Vue 3 + Element Plus |
+| 部署 | Docker Compose |
 
-```
-┌──────────────┐     ┌─────────────────────────────────────────────┐
-│  GitHub PR   │────▶│          六层管道架构                        │
-│  Webhook     │     │                                             │
-│  Manual      │     │  ① 事件采集 ──▶ ② 任务编排 ──▶ ③ LLM 抽取    │
-└──────────────┘     │       │              │              │        │
-                     │  ④ RAG 增强 ◀── ⑤ 审核发布 ──▶ ⑥ 知识检索    │
-                     │       │              │              │        │
-                     │  BM25+向量    审核状态机    语义搜索+关键词    │
-                     │  混合召回    (draft→approved→published)       │
-                     └─────────────────────────────────────────────┘
-```
+生产核心链路不会静默回退到 JSON、SQLite、FAISS 或内存存储；内存适配器仅供单元测试显式注入。
 
-**技术栈**：
+## Docker 一键启动
 
-| 层 | 技术 |
-|----|------|
-| 后端框架 | FastAPI + Uvicorn |
-| 前端框架 | Vue 3 + Vite + Pinia |
-| UI 组件库 | Element Plus |
-| 可视化 | ECharts |
-| 数据存储 | JSON 文件 + SQLite（幂等键） |
-| LLM 集成 | OpenAI 兼容 API |
-| 检索 | BM25 关键词索引 + 向量语义搜索 |
-| 发布（阶段一） | 本地 Markdown 输出 |
+前置条件只有 Docker Engine、Docker Compose v2，以及可用的 OpenAI、GitHub、飞书测试凭据。
 
-## 快速开始
-
-### 1. 启动后端（Demo 模式）
-
-无需配置 LLM Key，直接启动即可体验完整流程：
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev]
-python start_demo.py
+```powershell
+Copy-Item .env.example .env
+# 编辑 .env，填写所有必填凭据和检索范围
+docker compose config --quiet
+docker compose up -d --build
+docker compose ps
 ```
 
-后端地址：`http://localhost:8000`
+启动后：
 
-Demo 模式预设了基于真实仓库 [gulugulu33/aiflow-studio](https://github.com/gulugulu33/aiflow-studio) 的 4 条 Bug 报告、5 条知识条目和审核历史。
+- 管理台：`http://localhost:5173/retrospective`
+- API：`http://localhost:8000`
+- 健康检查：`http://localhost:8000/api/health`
+- 连接器状态：`http://localhost:8000/api/connectors/status`
+- GitHub Webhook：`http://<可访问地址>:8000/webhooks/github`
 
-> 如需真实 LLM 抽取，配置 `backend/.env` 中的 `LLM_API_KEY` 即可。
+`migrate` 容器会创建 vector 扩展和业务表；`api` 与 `worker` 只有在 PostgreSQL、Redis 及外部连接配置完整时才报告核心链路就绪。
 
-### 2. 启动前端
+## 必填配置
 
-```bash
-cd frontend
-npm install
-npm run dev
+| 变量 | 用途 |
+| --- | --- |
+| `POSTGRES_PASSWORD` | 本地 PostgreSQL 密码 |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | 结构化复盘生成 |
+| `EMBEDDING_MODEL` | Evidence 和知识条目向量化 |
+| `GITHUB_TOKEN` | 拉取 PR、diff、commit、评论和 Actions 日志 |
+| `GITHUB_WEBHOOK_SECRET` | GitHub Webhook HMAC-SHA256 验签 |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 飞书 tenant token |
+| `FEISHU_WIKI_SPACE_ID` | 发布目标 Wiki 空间 |
+| `FEISHU_WIKI_PARENT_NODE_TOKEN` | 发布父节点 |
+| `FEISHU_CHAT_IDS` | 默认检索群，逗号分隔 |
+| `FEISHU_DOC_TOKENS` | 默认检索文档，逗号分隔 |
+
+Webhook 创建的问题会自动继承默认飞书范围；手工创建时可以覆盖群和文档列表。
+
+### 千问配置
+
+项目已针对百炼 OpenAI 兼容接口做过真实调用验证。推荐配置如下：
+
+```dotenv
+OPENAI_API_KEY=你的百炼_API_Key
+OPENAI_MODEL=qwen3.7-flash
+OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_MODEL=qwen3.7-text-embedding-flash
 ```
 
-前端地址：`http://localhost:5173`
+也可以把 `OPENAI_BASE_URL` 换成百炼控制台提供的业务空间专属 `.../compatible-mode/v1` 地址。生成链路使用 Responses Function Calling，避免千问把 JSON 包在 Markdown 代码块中造成 SDK 严格解析失败；最终结果仍会经过完整 Pydantic 与 Evidence 引用校验。当前向量模型默认返回 1024 维，与 pgvector 表结构兼容。
 
-### 3. 试用流程
+### GitHub Webhook 配置
 
-1. 打开工作台 → 看到新手引导卡和 4 条 Demo 数据
-2. 点击 **Bug 复盘** → 左侧列表选择一条 Bug 报告
-3. 右侧查看 **LLM 抽取结果**（根因/修复方案/预防措施/来源引用）
-4. 编辑字段 → 点击 **通过审核** 或 **驳回**
-5. 审核通过后点击 **发布到知识库**
-6. 在知识库中搜索关键词（如 "upload"、"500"）验证召回效果
-7. 点击 **重置示例** 可一键恢复初始数据
+1. 先生成高熵 Secret，并将结果填入 `.env` 的 `GITHUB_WEBHOOK_SECRET`：
 
-## Web 控制台
+   ```powershell
+   $bytes = New-Object byte[] 32
+   [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+   [Convert]::ToHexString($bytes).ToLower()
+   ```
 
-| 页面 | 路径 | 功能 |
-|------|------|------|
-| 工作台 | `/dashboard` | 管道总览：沉淀时效、审核进度、知识库增长、Token 消耗 |
-| Bug 复盘 | `/ci-autofix` | 核心页面：LLM 抽取结果查看/编辑 + 审核操作（通过/驳回/发布） |
-| 知识库 | `/skill-library` | 语义搜索 + BM25 关键词混合召回 |
-| 抽取管道 | `/task-scheduling` | 六层管道任务流转可视化 |
-| 数据源管理 | `/repo-management` | GitHub 仓库接入 + Webhook 配置 |
-| 上下文 | `/context-management` | 代码上下文索引与依赖图 |
-| 管道监控 | `/observability` | 各层延迟、成功率、降级触发率 |
+2. GitHub 仓库进入 `Settings -> Webhooks -> Add webhook`，填写：
 
-## Demo 数据
+   | 配置项 | 值 |
+   | --- | --- |
+   | Payload URL | `https://你的公网域名/webhooks/github` |
+   | Content type | `application/json` |
+   | Secret | 与 `.env` 中 `GITHUB_WEBHOOK_SECRET` 完全相同 |
+   | SSL verification | Enable SSL verification |
+   | Events | Let me select individual events，只勾选 Pull requests |
+   | Active | 勾选 |
 
-基于真实仓库 [gulugulu33/aiflow-studio](https://github.com/gulugulu33/aiflow-studio)，所有 PR 编号和 commit SHA 来自真实 `git clone`：
+   GitHub 无法访问 `localhost`。本机联调时，需要先用 HTTPS 隧道把 `localhost:8000` 暴露出去，再把隧道地址拼成 `https://<隧道域名>/webhooks/github`。如果公网反向代理指向前端 `5173`，Nginx 也会把 `/webhooks/` 转发给 API。
 
-| Bug 报告 | 真实 PR | Commit SHA | 审核状态 |
-|----------|---------|------------|----------|
-| `bug-aiflow-001` | PR #3 fix(rag): 上传文件报500 | `6ae78ab` | published |
-| `bug-aiflow-002` | PR #1 fix(editor): 运行按钮空参数 | `b30d696` | approved |
-| `bug-aiflow-003` | PR #1 fix(style): CSS 样式回归 | `70fafa3` | draft |
-| `bug-aiflow-004` | PR #1 fix(applist): 重复创建示例应用 | `08c2141` | rejected |
+3. `GITHUB_TOKEN` 推荐使用 Fine-grained personal access token，只授权目标仓库，并开启 `Pull requests: Read` 和 `Actions: Read`；前者覆盖 PR、diff、commit 和 PR 评论读取，后者用于读取失败的 Actions 运行及日志。
+4. 保存 Webhook 后，GitHub 会先发送 `ping`。真正触发复盘的事件必须是 `pull_request` 且 payload 同时满足 `action=closed`、`pull_request.merged=true`。在 Webhook 的 `Recent Deliveries` 中应看到接口返回 `202`；签名错误会返回 `401`。
 
-## 目录结构
+修改 `.env` 后执行：
 
-```
-.
-├── backend/
-│   ├── src/repo_maintainer/
-│   │   ├── api.py               # FastAPI 路由
-│   │   ├── models.py            # BugReport / KnowledgeEntry
-│   │   ├── bug_schema.py        # LLM 抽取结果 Schema + 防幻觉 SourceRef
-│   │   ├── pr_listener.py       # GitHub/GitLab Webhook 解析
-│   │   ├── idempotency.py       # 幂等键 SQLite 存储
-│   │   ├── map_reduce_summary.py # 长上下文 Map-Reduce 压缩
-│   │   ├── log_compressor.py    # 日志智能裁剪
-│   │   ├── bm25_index.py        # BM25 关键词倒排索引
-│   │   ├── retrieval.py         # BM25 + 向量混合召回
-│   │   ├── llm_executor.py      # LLM 抽取 + 指数退避重试
-│   │   ├── review_workflow.py   # 审核状态机
-│   │   ├── wiki_publisher.py    # Markdown 知识发布
-│   │   └── frontend_service.py  # 前端数据服务
-│   ├── tests/
-│   ├── start_demo.py            # Demo 数据注入 + 启动
-│   └── .env.example
-├── frontend/
-│   ├── src/
-│   │   ├── views/                # 7 个页面组件
-│   │   ├── components/           # 通用组件 + 布局
-│   │   ├── api/platform.ts       # API 调用层
-│   │   ├── types/platform.ts     # 类型定义
-│   │   └── styles/global.css     # 设计系统
-│   └── index.html
-├── docs/
-│   └── refactor-plan.md
-└── README.md
+```powershell
+docker compose --env-file .env up -d --force-recreate api worker
 ```
 
-## 配置说明
+### 飞书变量配置
 
-| 变量 | 说明 | Demo 模式 |
-|------|------|-----------|
-| `LLM_API_KEY` | LLM API Key | 不需要 |
-| `LLM_MODEL` | 模型名称 | 不需要 |
-| `LLM_BASE_URL` | API 地址 | 不需要 |
-| `EMBEDDING_API_KEY` | Embedding API Key | 不需要 |
-| `API_HOST` | 后端监听地址 | `0.0.0.0` |
-| `API_PORT` | 后端监听端口 | `8000` |
+当前项目只主动调用飞书 OpenAPI，不接收飞书事件，所以不需要配置飞书事件订阅地址。
 
-> Demo 模式无需任何配置，所有数据预注入，可直接体验完整流程。
+1. 在飞书开放平台创建“企业自建应用”，开启机器人能力。在“凭证与基础信息”复制 App ID 和 App Secret：
 
-## 常用命令
+   ```dotenv
+   FEISHU_BASE_URL=https://open.feishu.cn
+   FEISHU_APP_ID=cli_xxx
+   FEISHU_APP_SECRET=xxx
+   ```
 
-```bash
-# 后端
-cd backend && .venv/bin/python start_demo.py     # 启动 Demo 服务
-cd backend && pytest                               # 运行测试
+2. 在“权限管理”中为应用申请下列接口需要的权限，然后创建版本并发布：
 
-# 前端
-cd frontend && npm run dev                         # 开发模式
-cd frontend && npm run build                       # 生产构建
+   - 获取会话历史消息：`GET /open-apis/im/v1/messages`
+   - 获取新版文档纯文本：`GET /open-apis/docx/v1/documents/{document_id}/raw_content`
+   - 在知识库创建节点：`POST /open-apis/wiki/v2/spaces/{space_id}/nodes`
+   - 创建新版文档块：`POST /open-apis/docx/v1/documents/{document_id}/blocks/{block_id}/children`
+
+   飞书控制台会按接口显示并申请当前准确的权限名称；至少需要消息只读、文档只读、文档编辑和知识库节点创建/编辑能力。
+
+3. 把机器人加入需要检索的群。通过飞书 API 调试台调用“获取用户或机器人所在的群列表”取得以 `oc_` 开头的 `chat_id`，多个群用英文逗号分隔：
+
+   ```dotenv
+   FEISHU_CHAT_IDS=oc_xxx,oc_yyy
+   ```
+
+4. `FEISHU_DOC_TOKENS` 填新版文档 URL 中 `/docx/` 后面的 `document_id`，多个文档用英文逗号分隔。若来源是 `/wiki/<node_token>` 链接，要先通过 Wiki 节点接口取得节点的 `obj_token`，不能直接填 Wiki node token：
+
+   ```dotenv
+   FEISHU_DOC_TOKENS=doxcn_xxx,doxcn_yyy
+   ```
+
+5. 在飞书知识库中创建或选定发布父节点：
+
+   - `FEISHU_WIKI_SPACE_ID`：通过“获取知识空间列表”API 取得目标空间的 `space_id`。
+   - `FEISHU_WIKI_PARENT_NODE_TOKEN`：目标父页面 URL 中 `/wiki/` 后面的 node token。
+
+   ```dotenv
+   FEISHU_WIKI_SPACE_ID=7xxxxxxxxxxxxxxx
+   FEISHU_WIKI_PARENT_NODE_TOKEN=wikcn_xxx
+   ```
+
+6. 把应用/机器人加入目标知识空间并授予编辑权限，同时确保应用有权访问 `FEISHU_DOC_TOKENS` 指定的文档。完成后重建 `api`、`worker`，再检查 `http://localhost:8000/api/health` 和 `http://localhost:8000/api/connectors/status`。
+
+## 使用流程
+
+1. 在 GitHub 仓库配置 `pull_request` Webhook 和相同的 Secret；只有 `closed + merged=true` 会创建任务。
+2. 或在“核心复盘”页面手工创建问题，然后点击“运行链路”。
+3. Worker 收集并保存原始 Evidence，只把经过选择和裁剪的片段送入模型。
+4. 在复盘页面查看质量分、风险提示和引用证据，必要时编辑 JSON 并保存人工版本。
+5. 执行“通过”；驳回时必须填写原因。
+6. 只有 `approved` 版本可以发布。发布成功后保存飞书 URL，并创建可检索知识条目。
+7. 使用 `GET /api/retrospective/knowledge/search?q=...` 验证新案例召回。
+
+## 核心 API
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `POST /webhooks/github` | GitHub merged PR 入口、验签与 delivery 幂等 |
+| `POST /api/retrospective/incidents` | 手工创建问题 |
+| `POST /api/retrospective/incidents/{id}/run` | 投递 Celery 主流程 |
+| `POST /api/retrospective/incidents/{id}/regenerate` | 驳回后基于已保存 Evidence 重新生成 |
+| `GET /api/retrospective/incidents/{id}` | 问题、Evidence、版本和审核历史 |
+| `PATCH /api/retrospective/incidents/{id}/document` | 保存人工修改版本 |
+| `POST .../{id}/approve` / `reject` | 审核操作 |
+| `POST .../{id}/publish` | 发布飞书并回流知识库 |
+| `GET /api/retrospective/knowledge/search` | 混合检索已发布知识 |
+
+## 本地验证
+
+```powershell
+$env:PYTHONPATH = "$PWD\backend\src"
+backend\.venv\Scripts\python.exe -m pytest backend\tests\test_retrospective_pipeline.py -q
+backend\.venv\Scripts\python.exe -m pytest backend\tests -q
+
+Set-Location frontend
+npm run build
 ```
 
-## 许可证
+核心单元测试使用显式 Fake/内存适配器，覆盖 Webhook 验签与幂等、完整审核发布回流、虚假引用拦截和上下文预算。正式验收仍需用真实 OpenAI、GitHub、飞书凭据完成一次端到端联调。
 
-MIT License
+## 关键目录
+
+```text
+backend/src/repo_maintainer/
+  retrospective_models.py       # 核心数据契约与状态机
+  retrospective_connectors.py   # GitHub、飞书、OpenAI、Redis
+  retrospective_pipeline.py     # 固定工作流、质量校验和闭环
+  retrospective_store.py        # PostgreSQL/pgvector 与测试适配器
+  retrospective_schema.sql      # vector 扩展和业务表
+  retrospective_api.py          # 核心 API
+  retrospective_tasks.py        # Celery Worker
+frontend/src/views/RetrospectiveView.vue
+compose.yaml
+docs/
+```
+
+需求范围、实施顺序和验收方法分别见 [product-requirements.md](docs/product-requirements.md)、[implementation-plan.md](docs/implementation-plan.md) 和 [acceptance-criteria.md](docs/acceptance-criteria.md)。当前完成度与待真实联调项见 [implementation-status.md](docs/implementation-status.md)，旧方案取舍见 [legacy-solution-review.md](docs/legacy-solution-review.md)。

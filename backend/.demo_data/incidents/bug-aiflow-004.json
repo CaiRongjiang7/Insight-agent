@@ -1,0 +1,60 @@
+{
+  "id": "bug-aiflow-004",
+  "title": "fix(applist): 修复刷新页面重复创建示例应用的问题",
+  "description": "每次刷新应用列表页时，onMount 逻辑未检查是否已存在示例应用，导致重复调用 createDemoApp()，数据库中产生大量重复示例。",
+  "logs": "[AppList] onMount → createDemoApp()\n[DB] INSERT INTO apps (name='示例应用') — duplicate entry\n[AppList] 12 个重复的「示例应用」卡片",
+  "metadata": {
+    "repo_id": "repo-aiflow",
+    "repo_name": "gulugulu33/aiflow-studio",
+    "error_type": "idempotency",
+    "bug_category": "idempotency",
+    "bug_category_label": "幂等性缺失",
+    "status": "rejected",
+    "review_status": "rejected",
+    "source_type": "pr",
+    "pr_id": "PR #1",
+    "commit_sha": "08c2141",
+    "provider": "github"
+  },
+  "source_type": "pr",
+  "pr_id": "PR #1",
+  "commit_sha": "08c2141",
+  "repo_url": "https://github.com/gulugulu33/aiflow-studio",
+  "reported_at": "2026-04-11T22:00:00+08:00",
+  "review_status": "rejected",
+  "extraction_confidence": 0.68,
+  "review_document": {
+    "title": "fix(applist): 修复刷新页面重复创建示例应用的问题",
+    "root_cause": {
+      "content": "onMount 中缺少「已存在示例应用」的前置检查，直接调用 createDemoApp()。",
+      "source": {
+        "type": "commit",
+        "location": "commit 08c2141 (PR #1)",
+        "snippet": "fix(applist): 修复刷新页面重复创建示例应用的问题"
+      }
+    },
+    "impact": {
+      "scope": "应用列表页加载",
+      "affected_users": "每次刷新页面的用户",
+      "severity": "P1"
+    },
+    "fix_solution": "在 createDemoApp 前先检查数据库是否已有示例应用。",
+    "prevention": "所有初始化逻辑统一加「已初始化」标记（localStorage/数据库均可）。",
+    "keywords": [
+      "applist",
+      "idempotency",
+      "duplicate",
+      "onMount",
+      "初始化"
+    ],
+    "confidence": 0.68,
+    "review_status": "rejected",
+    "source_refs": [
+      {
+        "type": "commit",
+        "location": "commit 08c2141",
+        "snippet": "fix(applist): 修复刷新页面重复创建示例应用的问题"
+      }
+    ]
+  }
+}

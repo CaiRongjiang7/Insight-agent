@@ -1,0 +1,10 @@
+[
+  {
+    "id": "rev-004-1",
+    "bug_report_id": "bug-aiflow-004",
+    "action": "reject",
+    "reviewer": "林梓圆",
+    "notes": "根因描述过于简化。实际原因是 onMount 缺少 hasDemoApp 检查，而非简单的重复调用问题。请补充完整根因分析后重新提交",
+    "created_at": "2026-04-11T22:45:00+08:00"
+  }
+]

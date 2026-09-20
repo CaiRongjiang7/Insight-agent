@@ -1,0 +1,60 @@
+{
+  "id": "bug-aiflow-002",
+  "title": "fix(editor): 修复顶栏运行按钮传空参数导致工作流执行失败",
+  "description": "应用编辑器中点击顶栏「运行」按钮时，如未选择任何工作流节点配置参数，后端收到空 payload 导致工作流执行器抛出异常，前端无任何提示。",
+  "logs": "[Editor] Run button clicked → payload: {}\n[Workflow] executor.start({}) → TypeError: Cannot read properties of undefined\n[Frontend] No error toast shown",
+  "metadata": {
+    "repo_id": "repo-aiflow",
+    "repo_name": "gulugulu33/aiflow-studio",
+    "error_type": "validation",
+    "bug_category": "validation",
+    "bug_category_label": "参数校验缺失",
+    "status": "approved",
+    "review_status": "approved",
+    "source_type": "pr",
+    "pr_id": "PR #1",
+    "commit_sha": "b30d696",
+    "provider": "github"
+  },
+  "source_type": "pr",
+  "pr_id": "PR #1",
+  "commit_sha": "b30d696",
+  "repo_url": "https://github.com/gulugulu33/aiflow-studio",
+  "reported_at": "2026-04-11T22:50:19+08:00",
+  "review_status": "approved",
+  "extraction_confidence": 0.91,
+  "review_document": {
+    "title": "fix(editor): 修复顶栏运行按钮传空参数导致工作流执行失败",
+    "root_cause": {
+      "content": "运行按钮点击时未校验工作流配置是否完整，直接将空 payload 传给执行器。执行器期望至少有一个节点配置，收到空对象后访问 undefined 属性崩溃。",
+      "source": {
+        "type": "commit",
+        "location": "commit b30d696 (PR #1)",
+        "snippet": "fix(editor): 修复顶栏运行按钮传空参数导致工作流执行失败"
+      }
+    },
+    "impact": {
+      "scope": "应用编辑器运行按钮",
+      "affected_users": "新创建的应用（无配置时点击运行）",
+      "severity": "P2"
+    },
+    "fix_solution": "运行前增加前置校验：如无节点配置则弹出 toast 提示用户先配置节点。",
+    "prevention": "所有「执行」类操作统一加前置校验守卫。",
+    "keywords": [
+      "editor",
+      "validation",
+      "workflow",
+      "empty-payload",
+      "toast"
+    ],
+    "confidence": 0.91,
+    "review_status": "approved",
+    "source_refs": [
+      {
+        "type": "commit",
+        "location": "commit b30d696",
+        "snippet": "fix(editor): 修复顶栏运行按钮传空参数导致工作流执行失败"
+      }
+    ]
+  }
+}

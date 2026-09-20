@@ -1,0 +1,61 @@
+{
+  "id": "bug-aiflow-001",
+  "title": "fix(rag): 修复知识库上传文件报500的问题",
+  "description": "用户上传文件到知识库时，如遇同名文件覆盖或 PDF 解析失败，后端直接返回 HTTP 500 而非有意义的错误提示。嵌入模型名称也配置错误（text-embedding-3-small → text-embedding-v3）。",
+  "logs": "[RAG] upload document '产品手册.pdf' → 500 Internal Server Error\n[RAG] Prisma: duplicate key error on document.name\n[RAG] Embedding API returned error: model not found",
+  "metadata": {
+    "repo_id": "repo-aiflow",
+    "repo_name": "gulugulu33/aiflow-studio",
+    "error_type": "rag_upload",
+    "bug_category": "rag_upload",
+    "bug_category_label": "RAG 上传异常",
+    "status": "published",
+    "review_status": "published",
+    "source_type": "pr",
+    "pr_id": "PR #3",
+    "commit_sha": "6ae78ab",
+    "provider": "github"
+  },
+  "source_type": "pr",
+  "pr_id": "PR #3",
+  "commit_sha": "6ae78ab",
+  "repo_url": "https://github.com/gulugulu33/aiflow-studio",
+  "reported_at": "2026-04-11T23:06:25+08:00",
+  "review_status": "published",
+  "extraction_confidence": 0.94,
+  "review_document": {
+    "title": "fix(rag): 修复知识库上传文件报500的问题",
+    "root_cause": {
+      "content": "1. 上传文件时未检查同名文件，Prisma create 触发唯一约束冲突 → 500\n2. embedding 模型配置为 'text-embedding-3-small'（OpenAI 模型名），  但实际使用 Qwen 网关，正确模型名为 'text-embedding-v3'\n3. embedding 生成异常被 try/catch 吞掉，返回空数组但无日志",
+      "source": {
+        "type": "commit",
+        "location": "commit 6ae78ab · rag.service.ts:115-122",
+        "snippet": "+ const existingDoc = await this.prisma.document.findFirst({ where: { name: file.originalname, knowledgeBaseId } });\n+ if (existingDoc) throw new BadRequestException(...);"
+      }
+    },
+    "impact": {
+      "scope": "知识库文件上传功能",
+      "affected_users": "所有上传文件到知识库的用户",
+      "severity": "P2"
+    },
+    "fix_solution": "1. 上传前先查询同名文件，已存在则抛 BadRequestException 提示用户改名\n2. embedding 模型改为 text-embedding-v3\n3. 新增 Logger 记录 embedding 失败原因",
+    "prevention": "1. 上传接口统一增加前置校验（文件大小/格式/同名检查）\n2. 第三方 API 调用统一使用结构化错误包装，不吞异常\n3. 模型名等配置从环境变量读取，避免硬编码",
+    "keywords": [
+      "rag",
+      "upload",
+      "500",
+      "embedding",
+      "BadRequestException",
+      "nest"
+    ],
+    "confidence": 0.94,
+    "review_status": "published",
+    "source_refs": [
+      {
+        "type": "commit",
+        "location": "commit 6ae78ab",
+        "snippet": "fix(rag): fix 500 error on document upload with duplicate name"
+      }
+    ]
+  }
+}

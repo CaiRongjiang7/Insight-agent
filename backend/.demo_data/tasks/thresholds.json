@@ -1,0 +1,26 @@
+{
+  "repair_success_rate": {
+    "warning": 0.78,
+    "danger": 0.62
+  },
+  "skill_hit_rate": {
+    "warning": 0.55,
+    "danger": 0.35
+  },
+  "avg_retrieval_score": {
+    "warning": 0.18,
+    "danger": 0.08
+  },
+  "auto_dream_rate": {
+    "warning": 0.45,
+    "danger": 0.2
+  },
+  "avg_token_usage": {
+    "warning": 900.0,
+    "danger": 1800.0
+  },
+  "avg_task_chain_length": {
+    "warning": 2.8,
+    "danger": 4.0
+  }
+}

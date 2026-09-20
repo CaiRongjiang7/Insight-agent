@@ -1,0 +1,129 @@
+name: insight-review-agent
+
+services:
+  postgres:
+    build:
+      context: ./postgres
+    image: insight-review-postgres:16-pgvector
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-review_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-review_agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-review_agent} -d ${POSTGRES_DB:-review_agent}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: public.ecr.aws/docker/library/redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    image: insight-review-backend:latest
+    command: ["python", "-m", "repo_maintainer.retrospective_migrate"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-review_agent}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-review_agent}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ./backend
+    image: insight-review-backend:latest
+    command: ["uvicorn", "repo_maintainer.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      REVIEW_PIPELINE_ENABLED: "1"
+      TASK_QUEUE_MODE: celery
+      DATABASE_URL: postgresql://${POSTGRES_USER:-review_agent}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-review_agent}
+      REDIS_URL: redis://redis:6379/0
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-60}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+      FEISHU_BASE_URL: ${FEISHU_BASE_URL:-https://open.feishu.cn}
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      FEISHU_WIKI_SPACE_ID: ${FEISHU_WIKI_SPACE_ID:-}
+      FEISHU_WIKI_PARENT_NODE_TOKEN: ${FEISHU_WIKI_PARENT_NODE_TOKEN:-}
+      FEISHU_CHAT_IDS: ${FEISHU_CHAT_IDS:-}
+      FEISHU_DOC_TOKENS: ${FEISHU_DOC_TOKENS:-}
+      RAG_TOP_K: ${RAG_TOP_K:-5}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-2}
+      CONTEXT_BUDGET_CHARS: ${CONTEXT_BUDGET_CHARS:-24000}
+      CONTEXT_ITEM_MAX_CHARS: ${CONTEXT_ITEM_MAX_CHARS:-6000}
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/liveness', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  worker:
+    image: insight-review-backend:latest
+    command: ["celery", "-A", "repo_maintainer.retrospective_tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    environment:
+      REVIEW_PIPELINE_ENABLED: "1"
+      TASK_QUEUE_MODE: celery
+      DATABASE_URL: postgresql://${POSTGRES_USER:-review_agent}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-review_agent}
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-60}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+      FEISHU_BASE_URL: ${FEISHU_BASE_URL:-https://open.feishu.cn}
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      FEISHU_WIKI_SPACE_ID: ${FEISHU_WIKI_SPACE_ID:-}
+      FEISHU_WIKI_PARENT_NODE_TOKEN: ${FEISHU_WIKI_PARENT_NODE_TOKEN:-}
+      FEISHU_CHAT_IDS: ${FEISHU_CHAT_IDS:-}
+      FEISHU_DOC_TOKENS: ${FEISHU_DOC_TOKENS:-}
+      RAG_TOP_K: ${RAG_TOP_K:-5}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-2}
+      CONTEXT_BUDGET_CHARS: ${CONTEXT_BUDGET_CHARS:-24000}
+      CONTEXT_ITEM_MAX_CHARS: ${CONTEXT_ITEM_MAX_CHARS:-6000}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,11 @@
+frontend/node_modules/
+.idea/
+.pnpm-store/
+backend/.venv/
+backend/.pytest_cache/
+.env
+**/__pycache__/
+*.py[cod]
+frontend/dist/
+backend/.test_runs/
+backend/runtime/

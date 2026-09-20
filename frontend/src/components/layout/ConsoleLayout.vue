@@ -103,6 +103,7 @@ const keyword = ref("");
 
 const menus = [
   { path: "/dashboard",          label: "工作台",     icon: Compass },
+  { path: "/retrospective",      label: "核心复盘",   icon: Cpu },
   { path: "/ci-autofix",         label: "Bug 复盘",   icon: Cpu },
   { path: "/skill-library",      label: "踩坑知识库", icon: Collection },
   { path: "/task-scheduling",    label: "抽取管道",   icon: Connection },

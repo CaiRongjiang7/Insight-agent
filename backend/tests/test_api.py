@@ -129,7 +129,8 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(observability.status_code, 200)
         self.assertIn("hero_metrics", overview.json())
         self.assertIn("catalog", providers.json())
-        self.assertGreaterEqual(len(repos.json()), 1)
+        # Production defaults deliberately do not inject demo repositories.
+        self.assertIsInstance(repos.json(), list)
         self.assertIn("learning_status", observability.json())
 
     def test_ci_provider_and_sync_endpoints(self) -> None:

@@ -21,6 +21,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "数据源详情" },
   },
   {
+    path: "/retrospective",
+    name: "retrospective",
+    component: () => import("@/views/RetrospectiveView.vue"),
+    meta: { title: "核心复盘闭环" },
+  },
+  {
     path: "/ci-autofix",
     name: "ci-autofix",
     component: () => import("@/views/CiAutofixView.vue"),

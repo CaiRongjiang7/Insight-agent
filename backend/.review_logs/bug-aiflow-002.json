@@ -1,0 +1,10 @@
+[
+  {
+    "id": "rev-002-1",
+    "bug_report_id": "bug-aiflow-002",
+    "action": "approve",
+    "reviewer": "林梓圆",
+    "notes": "前置校验方案可行，已在 AppEditor.tsx 中实现",
+    "created_at": "2026-04-11T23:00:00+08:00"
+  }
+]

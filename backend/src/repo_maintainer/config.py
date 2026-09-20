@@ -479,7 +479,7 @@ class RuntimeConfig:
 @dataclass(frozen=True)
 class SecurityConfig:
     allow_remote_reads: bool = True
-    require_github_write_approval: bool = False
+    require_github_write_approval: bool = True
     require_remote_execution_approval: bool = False
     allow_unapproved_local_validation: bool = True
     default_approval_ttl_hours: int = 24
@@ -487,7 +487,7 @@ class SecurityConfig:
     @classmethod
     def from_env(cls) -> "SecurityConfig":
         return cls(
-            require_github_write_approval=_env_flag("REQUIRE_GITHUB_WRITE_APPROVAL", "0"),
+            require_github_write_approval=_env_flag("REQUIRE_GITHUB_WRITE_APPROVAL", "1"),
             require_remote_execution_approval=_env_flag("REQUIRE_REMOTE_EXECUTION_APPROVAL", "0"),
             allow_unapproved_local_validation=_env_flag("ALLOW_UNAPPROVED_LOCAL_VALIDATION", "1"),
             default_approval_ttl_hours=int(os.getenv("APPROVAL_TTL_HOURS", "24")),

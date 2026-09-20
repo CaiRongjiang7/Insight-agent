@@ -1,0 +1,27 @@
+{
+  "id": "bug-aiflow-003",
+  "title": "fix(style): 恢复被意外覆盖的 Layout 和 KnowledgeBase 样式",
+  "description": "某次合并后，Layout.css 和 KnowledgeBase.css 的大量自定义样式被默认样式覆盖，导致侧边栏布局错位、知识库列表卡片变形。",
+  "logs": "[Style] Layout.css diff: -498 lines, +0 (被覆盖)\n[Style] KnowledgeBase.css diff: -369 lines, +0\n[UX] 侧边栏 width 异常、卡片 border-radius 丢失",
+  "metadata": {
+    "repo_id": "repo-aiflow",
+    "repo_name": "gulugulu33/aiflow-studio",
+    "error_type": "style_regression",
+    "bug_category": "style_regression",
+    "bug_category_label": "样式回归",
+    "status": "draft",
+    "review_status": "draft",
+    "source_type": "pr",
+    "pr_id": "PR #1",
+    "commit_sha": "70fafa3",
+    "provider": "github"
+  },
+  "source_type": "pr",
+  "pr_id": "PR #1",
+  "commit_sha": "70fafa3",
+  "repo_url": "https://github.com/gulugulu33/aiflow-studio",
+  "reported_at": "2026-04-11T22:30:00+08:00",
+  "review_status": "draft",
+  "extraction_confidence": null,
+  "review_document": null
+}

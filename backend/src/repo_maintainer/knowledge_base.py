@@ -4,6 +4,7 @@ Knowledge base — stores team bug review entries indexed by keywords and trigge
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -185,7 +186,6 @@ class KnowledgeBase:
                 [entry.name, entry.description, *entry.triggers, *entry.error_types]
             ).lower()
             if any(kw in entry_text for kw in error.keywords) or error.error_type.value in entry.error_types:
-                entry.hit_rate = min(1.0, entry.hit_rate + 0.05)
                 entry.last_used_at = _utc_now().isoformat()
                 matched.append(entry)
         return matched
@@ -195,7 +195,7 @@ class KnowledgeBase:
         entry = self._entries.get(entry_id)
         if entry is None:
             return False
-        entry.status = "retired"
+        entry.active = False
         self._save()
         return True
 
@@ -204,9 +204,55 @@ class KnowledgeBase:
         entry = self._entries.get(entry_id)
         if entry is None:
             return False
-        entry.status = "active"
+        entry.active = True
         self._save()
         return True
+
+    def find_similar(
+        self,
+        cluster: str,
+        error_type: str,
+        keywords: list[str],
+    ) -> KnowledgeEntry | None:
+        """Find an existing entry suitable for knowledge-evolution merging."""
+        self._load()
+        cluster_tokens = {
+            token for token in re.split(r"[^a-z0-9]+", cluster.lower()) if len(token) > 2
+        }
+        query_tokens = cluster_tokens | {
+            str(token).strip().lower() for token in keywords if len(str(token).strip()) > 2
+        }
+        best: tuple[float, KnowledgeEntry] | None = None
+        for entry in self._entries.values():
+            if not entry.active:
+                continue
+            entry_tokens = {
+                str(token).strip().lower()
+                for token in [*entry.triggers, *entry.keywords]
+                if len(str(token).strip()) > 2
+            }
+            score = 4.0 if error_type.lower() in {value.lower() for value in entry.error_types} else 0.0
+            score += float(len(query_tokens & entry_tokens))
+            if score <= 0:
+                continue
+            candidate = (score, entry)
+            if best is None or candidate[0] > best[0] or (
+                candidate[0] == best[0] and candidate[1].id < best[1].id
+            ):
+                best = candidate
+        return best[1] if best is not None else None
+
+    def govern(self, *, min_usage: int = 5, min_success_rate: float = 0.2) -> list[str]:
+        """Retire only repeatedly unsuccessful entries; keep governance conservative."""
+        self._load()
+        retired: list[str] = []
+        for entry in self._entries.values():
+            if entry.active and entry.usage_count >= min_usage and entry.success_rate < min_success_rate:
+                entry.active = False
+                retired.append(entry.id)
+        if retired:
+            self._save()
+        return sorted(retired)
 
     def _load(self) -> None:
         if not self.skills_path.exists():
@@ -228,9 +274,69 @@ class KnowledgeBase:
 class SkillRepository(KnowledgeBase):
     """Type alias for compatibility with legacy skill_repository API."""
 
+    def match_skills(self, compressed_error, incident, limit: int = 8) -> list[KnowledgeEntry]:
+        """Return deterministic lexical matches used by the legacy repair pipeline.
+
+        The platform historically called ``match_skills`` before semantic ranking,
+        but the repository rename from SkillRepository to KnowledgeBase dropped the
+        compatibility method.  Keep this scorer intentionally small: it boosts an
+        exact incident type, then counts trigger, keyword, error-name, file and
+        module matches.  Semantic retrieval still performs the final merge.
+        """
+        self._load()
+        incident_type = str(getattr(getattr(compressed_error, "error_type", ""), "value", "")).lower()
+        haystack = " ".join(
+            [
+                incident_type,
+                str(getattr(compressed_error, "error_name", "")),
+                str(getattr(compressed_error, "root_cause_cluster", "")),
+                " ".join(getattr(compressed_error, "keywords", []) or []),
+                str(getattr(incident, "title", "")),
+                str(getattr(incident, "description", "")),
+                " ".join(getattr(incident, "changed_files", []) or []),
+                " ".join(getattr(incident, "suspected_modules", []) or []),
+            ]
+        ).lower()
+        scored: list[tuple[float, KnowledgeEntry]] = []
+        for entry in self._entries.values():
+            if not entry.active:
+                continue
+            score = 0.0
+            error_types = {str(value).lower() for value in entry.error_types}
+            if incident_type and incident_type in error_types:
+                score += 5.0
+            for token in [*entry.triggers, *entry.keywords]:
+                normalized = str(token).strip().lower()
+                if normalized and normalized in haystack:
+                    score += 1.0
+            name = entry.name.strip().lower()
+            if name and name in haystack:
+                score += 0.5
+            if score > 0:
+                scored.append((score, entry))
+        scored.sort(key=lambda item: (-item[0], item[1].id))
+        return [entry for _, entry in scored[: max(limit, 0)]]
+
     def all_skills(self) -> list[KnowledgeEntry]:
         """Legacy: same as all_entries()."""
         return self.all_entries()
+
+    def record_outcomes(self, skill_ids: list[str], success: bool) -> None:
+        """Persist usage statistics for skills selected by a completed trace."""
+        self._load()
+        changed = False
+        used_at = _utc_now().isoformat()
+        for skill_id in dict.fromkeys(skill_ids):
+            entry = self._entries.get(skill_id)
+            if entry is None:
+                continue
+            entry.usage_count += 1
+            if success:
+                entry.success_count += 1
+            entry.last_used_at = used_at
+            changed = True
+        if changed:
+            self._save()
 
     def upsert(self, entry: KnowledgeEntry) -> None:
         """Legacy: same as add()."""

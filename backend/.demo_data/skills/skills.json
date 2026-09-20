@@ -1,0 +1,166 @@
+[
+  {
+    "id": "know-001",
+    "name": "RAG 文件上传异常处理",
+    "description": "上传文件到知识库时需校验同名文件、文件大小和格式，embedding 模型名需与网关一致，异常不可被吞掉。",
+    "triggers": [
+      "rag",
+      "upload",
+      "500",
+      "embedding",
+      "BadRequestException"
+    ],
+    "error_types": [
+      "rag_upload"
+    ],
+    "action_template": "1. 上传前检查文件大小/格式 + 同名检查\n2. embedding 模型名从环境变量读取\n3. 异常统一结构化返回，不吞日志",
+    "keywords": [
+      "rag",
+      "upload",
+      "embedding",
+      "BadRequestException",
+      "nest"
+    ],
+    "applicable_context": "NestJS 后端文件上传 + RAG 知识库场景",
+    "related_bug_ids": [
+      "bug-aiflow-001"
+    ],
+    "usage_count": 15,
+    "success_rate": 0.94,
+    "hit_rate": 0.78,
+    "decay_factor": 0.95,
+    "status": "active",
+    "status_label": "Active",
+    "last_used_at": "2026-04-12T10:00:00+08:00"
+  },
+  {
+    "id": "know-002",
+    "name": "前端操作前置校验模式",
+    "description": "点击执行/运行/提交类按钮时，必须先校验参数完整性，缺失时弹出 Toast 提示而非静默传给后端。",
+    "triggers": [
+      "validation",
+      "toast",
+      "空参数",
+      "前置校验"
+    ],
+    "error_types": [
+      "validation"
+    ],
+    "action_template": "const handleRun = () => {\n  if (!configValid) return toast.warning('请先配置工作流节点')\n  executor.start(config)\n}",
+    "keywords": [
+      "validation",
+      "empty-payload",
+      "toast",
+      "前端校验"
+    ],
+    "applicable_context": "React/Vue 前端表单提交/按钮点击前校验",
+    "related_bug_ids": [
+      "bug-aiflow-002"
+    ],
+    "usage_count": 10,
+    "success_rate": 0.91,
+    "hit_rate": 0.72,
+    "decay_factor": 0.93,
+    "status": "active",
+    "status_label": "Active",
+    "last_used_at": "2026-04-12T09:00:00+08:00"
+  },
+  {
+    "id": "know-003",
+    "name": "CSS 样式回归防御",
+    "description": "合并分支前应确认 CSS 依赖顺序，避免全局样式文件被覆盖。推荐使用 CSS Modules 或 scoped styles。",
+    "triggers": [
+      "css",
+      "style_regression",
+      "合并冲突",
+      "样式覆盖"
+    ],
+    "error_types": [
+      "style_regression"
+    ],
+    "action_template": "1. 使用 CSS Modules 隔离组件样式\n2. 合并前 Diff 所有 .css 文件变更\n3. 视觉回归测试截图对比",
+    "keywords": [
+      "css",
+      "style-regression",
+      "CSS Modules",
+      "merge-conflict"
+    ],
+    "applicable_context": "前端项目 CSS 合并冲突/样式意外覆写",
+    "related_bug_ids": [
+      "bug-aiflow-003"
+    ],
+    "usage_count": 6,
+    "success_rate": 0.86,
+    "hit_rate": 0.58,
+    "decay_factor": 0.9,
+    "status": "active",
+    "status_label": "Active",
+    "last_used_at": "2026-04-11T22:30:00+08:00"
+  },
+  {
+    "id": "know-004",
+    "name": "应用初始化幂等性设计",
+    "description": "onMount / useEffect 中的初始化逻辑必须先检查数据是否已存在，避免每次都重复创建，产生大量脏数据。",
+    "triggers": [
+      "idempotency",
+      "onMount",
+      "初始化",
+      "重复创建"
+    ],
+    "error_types": [
+      "idempotency"
+    ],
+    "action_template": "useEffect(() => {\n  if (apps.length === 0) createDemoApp() // 仅在无应用时初始化\n}, [])\n// 或使用 localStorage flag 标记已初始化",
+    "keywords": [
+      "idempotency",
+      "onMount",
+      "duplicate",
+      "初始化",
+      "localStorage"
+    ],
+    "applicable_context": "React/Vue 组件 onMount 中执行一次性初始化逻辑",
+    "related_bug_ids": [
+      "bug-aiflow-004"
+    ],
+    "usage_count": 8,
+    "success_rate": 0.82,
+    "hit_rate": 0.63,
+    "decay_factor": 0.91,
+    "status": "active",
+    "status_label": "Active",
+    "last_used_at": "2026-04-11T22:00:00+08:00"
+  },
+  {
+    "id": "know-005",
+    "name": "AI 服务模型名配置规范",
+    "description": "不同 AI 网关（OpenAI / Qwen / 本地模型）使用不同的 embedding 模型名，必须从环境变量读取而非硬编码。",
+    "triggers": [
+      "embedding",
+      "model",
+      "Qwen",
+      "OpenAI",
+      "配置"
+    ],
+    "error_types": [
+      "rag_upload"
+    ],
+    "action_template": "const embeddingModel = process.env.EMBEDDING_MODEL || 'text-embedding-v3'\n// 不同环境使用不同模型名",
+    "keywords": [
+      "embedding",
+      "Qwen",
+      "text-embedding-v3",
+      "环境变量"
+    ],
+    "applicable_context": "后端调用 AI embedding/LLM API 时的模型名配置",
+    "related_bug_ids": [
+      "bug-aiflow-001"
+    ],
+    "usage_count": 5,
+    "success_rate": 0.88,
+    "hit_rate": 0.55,
+    "decay_factor": 0.92,
+    "status": "active",
+    "status_label": "Active",
+    "last_used_at": "2026-04-12T10:00:00+08:00"
+  }
+]

@@ -1,0 +1,18 @@
+[
+  {
+    "id": "rev-001-1",
+    "bug_report_id": "bug-aiflow-001",
+    "action": "approve",
+    "reviewer": "林梓圆",
+    "notes": "根因准确：缺少同名检查 + 模型名错误。修复方案已在 PR #3 验证",
+    "created_at": "2026-04-11T23:10:00+08:00"
+  },
+  {
+    "id": "rev-001-2",
+    "bug_report_id": "bug-aiflow-001",
+    "action": "publish",
+    "reviewer": "林梓圆",
+    "notes": "发布到踩坑知识库 → know-001 / know-005",
+    "created_at": "2026-04-11T23:15:00+08:00"
+  }
+]
