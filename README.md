@@ -189,6 +189,14 @@ docker compose --env-file .env up -d --force-recreate api worker
 
 ## 本地验证
 
+完整 Docker 闭环可使用独立的模拟外部平台环境验证，不使用正式 `.env` 中的凭据，也不会污染正式 PostgreSQL 或飞书空间：
+
+```bash
+sh e2e/run.sh
+```
+
+测试覆盖 GitHub Webhook 验签与幂等、PR/Commit/Diff/CI 取证、飞书聊天与文档取证、Celery 异步生成、人工审核、飞书 Wiki 发布、PostgreSQL/pgvector 知识入库及 RAG 二次召回。详细说明见 [`docs/e2e-testing.md`](docs/e2e-testing.md)。
+
 ```powershell
 $env:PYTHONPATH = "$PWD\backend\src"
 backend\.venv\Scripts\python.exe -m pytest backend\tests\test_retrospective_pipeline.py -q

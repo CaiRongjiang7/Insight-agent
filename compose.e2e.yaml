@@ -1,0 +1,120 @@
+name: insight-review-agent-e2e
+
+services:
+  postgres:
+    build:
+      context: ./postgres
+    image: insight-review-e2e-postgres:16-pgvector
+    environment:
+      POSTGRES_DB: review_agent_e2e
+      POSTGRES_USER: review_agent_e2e
+      POSTGRES_PASSWORD: e2e-postgres-password
+    volumes:
+      - postgres_e2e_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U review_agent_e2e -d review_agent_e2e"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: public.ecr.aws/docker/library/redis:7-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  mock-external:
+    build:
+      context: ./backend
+    image: insight-review-e2e-backend:latest
+    command: ["uvicorn", "mock_external_services:app", "--app-dir", "/e2e", "--host", "0.0.0.0", "--port", "9000"]
+    volumes:
+      - ./e2e:/e2e:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=3)"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    build:
+      context: ./backend
+    image: insight-review-e2e-backend:latest
+    command: ["python", "-m", "repo_maintainer.retrospective_migrate"]
+    environment:
+      DATABASE_URL: postgresql://review_agent_e2e:e2e-postgres-password@postgres:5432/review_agent_e2e
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ./backend
+    image: insight-review-e2e-backend:latest
+    command: ["uvicorn", "repo_maintainer.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: &pipeline_environment
+      REVIEW_PIPELINE_ENABLED: "1"
+      TASK_QUEUE_MODE: celery
+      DATABASE_URL: postgresql://review_agent_e2e:e2e-postgres-password@postgres:5432/review_agent_e2e
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: e2e-openai-key
+      OPENAI_MODEL: e2e-review-model
+      OPENAI_BASE_URL: http://mock-external:9000/openai/v1
+      EMBEDDING_MODEL: e2e-embedding-model
+      OPENAI_TIMEOUT_SECONDS: "15"
+      GITHUB_TOKEN: e2e-github-token
+      GITHUB_WEBHOOK_SECRET: e2e-webhook-secret
+      GITHUB_API_URL: http://mock-external:9000/github
+      FEISHU_BASE_URL: http://mock-external:9000/feishu
+      FEISHU_APP_ID: e2e-feishu-app
+      FEISHU_APP_SECRET: e2e-feishu-secret
+      FEISHU_WIKI_SPACE_ID: e2e-space
+      FEISHU_WIKI_PARENT_NODE_TOKEN: e2e-parent-node
+      FEISHU_CHAT_IDS: oc_e2e_payment_oncall
+      FEISHU_DOC_TOKENS: doccn_e2e_payment_runbook
+      RAG_TOP_K: "5"
+      LLM_MAX_RETRIES: "2"
+      CONTEXT_BUDGET_CHARS: "24000"
+      CONTEXT_ITEM_MAX_CHARS: "6000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      mock-external:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/liveness', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  worker:
+    build:
+      context: ./backend
+    image: insight-review-e2e-backend:latest
+    command: ["celery", "-A", "repo_maintainer.retrospective_tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=1"]
+    environment: *pipeline_environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      mock-external:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "127.0.0.1:18080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_e2e_data:

@@ -69,8 +69,8 @@ services:
       LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-2}
       CONTEXT_BUDGET_CHARS: ${CONTEXT_BUDGET_CHARS:-24000}
       CONTEXT_ITEM_MAX_CHARS: ${CONTEXT_ITEM_MAX_CHARS:-6000}
-    ports:
-      - "8000:8000"
+    # ports:
+    #   - "8000:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -119,7 +119,8 @@ services:
     build:
       context: ./frontend
     ports:
-      - "5173:80"
+      # - "5173:80"
+      - "80:80"
     depends_on:
       api:
         condition: service_healthy

@@ -1,5 +1,18 @@
 FROM public.ecr.aws/docker/library/postgres:16-bookworm
 
+# The postgres:bookworm image is Debian-based; configure its DEB822/list sources.
+RUN set -eux; \
+    for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+        if [ -f "${source_file}" ]; then \
+            sed -i \
+                -e 's|http://deb.debian.org|http://mirrors.tuna.tsinghua.edu.cn|g' \
+                -e 's|https://deb.debian.org|http://mirrors.tuna.tsinghua.edu.cn|g' \
+                -e 's|http://security.debian.org|http://mirrors.tuna.tsinghua.edu.cn|g' \
+                -e 's|https://security.debian.org|http://mirrors.tuna.tsinghua.edu.cn|g' \
+                "${source_file}"; \
+        fi; \
+    done
+
 ARG PGVECTOR_VERSION=0.8.6
 
 RUN apt-get update \
