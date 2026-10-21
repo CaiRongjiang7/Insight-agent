@@ -1,3 +1,4 @@
+.gitignore list
 frontend/node_modules/
 .idea/
 .pnpm-store/
@@ -9,3 +10,4 @@ backend/.pytest_cache/
 frontend/dist/
 backend/.test_runs/
 backend/runtime/
+蔡荣江-简历-4.docx
