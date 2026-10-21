@@ -15,11 +15,11 @@
 
 本版本以“完整链路可运行、核心功能可演示、简历描述有真实代码支撑”为唯一优先目标，不按企业级平台建设。
 
-复核旧方案后，保留其低成本且直接服务主链路的设计：Webhook 事件驱动、结构化输出、混合检索、证据约束、人工审核、幂等重试和发布回流；不引入 Kafka/RabbitMQ、独立 reranker、日志平台连接器、多模型路由、Code Graph 等首期非必要能力。具体取舍见 `docs/legacy-solution-review.md`。
+复核旧方案后，保留其低成本且直接服务主链路的设计：Webhook 事件驱动、结构化输出、混合检索、证据约束、人工审核、幂等重试和发布回流；不引入 Kafka/RabbitMQ、独立 reranker、日志平台连接器或多模型路由。代码上下文仅对固定 commit 做按需的局部静态扩展，不建设独立的全仓 Code Graph 服务。具体取舍见 `docs/legacy-solution-review.md`。
 
 保留的核心能力：
 
-1. GitHub 合并 PR 事件接入与代码变更上下文获取，支持手工补录。
+1. GitHub 合并 PR 事件接入与代码变更上下文获取，支持手工补录；对可定位到 commit 的问题补充局部源码关系证据。
 2. 飞书群消息、Wiki/文档上下文读取。
 3. PostgreSQL/pgvector 知识库和带元数据过滤的 RAG。
 4. Redis 异步任务、幂等和进度缓存。
@@ -151,7 +151,7 @@ pending_review -> rejected -> generating
 | CORE-003 | Webhook 落库后异步处理，获取 PR/commit/diff、变更文件、PR 描述和 CI 日志。 |
 | CORE-004 | 支持管理台手工创建问题，便于补录和演示。 |
 | CORE-005 | 每份代码证据保存来源类型、仓库、commit SHA、文件路径、URL、时间和原文。 |
-| CORE-006 | 在保留原始 Evidence 的前提下，依据 changed files、diff hunk、错误栈、模块和问题关键词筛选进入模型的片段，并记录选择原因，避免把整个 PR 和完整日志直接送入模型。 |
+| CORE-006 | 在保留原始 Evidence 的前提下，依据 changed files、diff hunk、错误栈、模块和问题关键词筛选进入模型的片段，并记录选择原因，避免把整个 PR 和完整日志直接送入模型。对固定 commit 的仓库，使用 AST、导入、调用和测试引用扩展未出现在 diff 中的候选源码；关系只用于召回，结论引用必须落到源码原文。 |
 
 GitLab 保留现有兼容代码，但不作为核心版完成门禁；核心链路先以 GitHub 跑通。
 

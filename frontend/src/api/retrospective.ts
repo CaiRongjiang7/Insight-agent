@@ -29,6 +29,7 @@ export interface CoreIncident {
   trace_id: string;
   error: string;
   failed_stage: string;
+  metadata?: { code_context_warning?: string };
   current_version: number;
   created_at: string;
   updated_at: string;

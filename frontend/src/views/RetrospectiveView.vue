@@ -55,6 +55,7 @@
             <el-descriptions-item label="版本">{{ detail.incident.current_version }}</el-descriptions-item>
           </el-descriptions>
           <el-alert v-if="detail.incident.error" :title="detail.incident.error" type="error" show-icon :closable="false" />
+          <el-alert v-if="detail.incident.metadata?.code_context_warning" :title="`源码上下文未获取：${detail.incident.metadata.code_context_warning}`" type="warning" show-icon :closable="false" />
 
           <el-tabs v-model="activeTab">
             <el-tab-pane label="复盘材料" name="document">
@@ -72,6 +73,7 @@
                       <div><el-tag size="small">{{ row.section }}</el-tag> <strong>{{ row.evidence?.location || row.citation.evidence_id }}</strong></div>
                       <blockquote>{{ row.citation.quote }}</blockquote>
                       <small>{{ row.evidence?.source_type || "证据不存在" }} · {{ row.citation.evidence_id }}</small>
+                      <a v-if="row.evidence?.source_url" :href="row.evidence.source_url" target="_blank" rel="noopener noreferrer">查看来源</a>
                     </article>
                   </div>
                 </div>
@@ -87,6 +89,7 @@
               <div v-for="item in detail.evidence" :key="item.id" class="evidence-card">
                 <div><el-tag size="small">{{ item.source_type }}</el-tag> <strong>{{ item.location }}</strong></div>
                 <small>{{ item.id }} · {{ item.selected ? item.selection_reason : "未进入模型上下文" }}</small>
+                <a v-if="item.source_url" :href="item.source_url" target="_blank" rel="noopener noreferrer">查看来源</a>
                 <pre>{{ item.content }}</pre>
               </div>
             </el-tab-pane>

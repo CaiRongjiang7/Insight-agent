@@ -56,6 +56,7 @@ class EvidenceSource(str, Enum):
     GITHUB_PR = "github_pr"
     GITHUB_COMMIT = "github_commit"
     GITHUB_DIFF = "github_diff"
+    REPOSITORY_CODE = "repository_code"
     CI_LOG = "ci_log"
     FEISHU_MESSAGE = "feishu_message"
     FEISHU_DOC = "feishu_doc"
@@ -224,4 +225,3 @@ class GenerationMetadata(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     duration_ms: int = 0
-

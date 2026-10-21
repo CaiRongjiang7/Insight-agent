@@ -14,6 +14,7 @@ from .retrospective_connectors import (
     RedisTokenCache,
 )
 from .retrospective_pipeline import ContextSelector, RetrospectivePipeline
+from .retrospective_code_context import GitHubArchiveSource, RepositoryCodeContext
 from .retrospective_store import PostgresRetrospectiveStore
 
 
@@ -58,7 +59,11 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
     feishu_space_id = _required("FEISHU_WIKI_SPACE_ID")
     feishu_parent = _required("FEISHU_WIKI_PARENT_NODE_TOKEN")
 
-    store = PostgresRetrospectiveStore(database_url)
+    store = PostgresRetrospectiveStore(
+        database_url,
+        rrf_k=int(os.getenv("RAG_RRF_K", "60")),
+        channel_pool=int(os.getenv("RAG_CHANNEL_POOL", "40")),
+    )
     if initialize_store:
         store.initialize()
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
@@ -71,9 +76,21 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
         wiki_space_id=feishu_space_id,
         wiki_parent_node_token=feishu_parent,
     )
+    code_context = None
+    if os.getenv("CODE_CONTEXT_ENABLED", "1").strip().lower() not in {"0", "false", "no"}:
+        code_context = RepositoryCodeContext(
+            GitHubArchiveSource(
+                github_token,
+                api_url=os.getenv("GITHUB_API_URL", "https://api.github.com"),
+                max_archive_bytes=int(os.getenv("CODE_CONTEXT_MAX_ARCHIVE_BYTES", "30000000")),
+            ),
+            max_files=int(os.getenv("CODE_CONTEXT_MAX_FILES", "10")),
+            max_expanded_files=int(os.getenv("CODE_CONTEXT_MAX_EXPANDED_FILES", "40")),
+        )
     return RetrospectivePipeline(
         store=store,
         git=GitHubConnector(github_token, api_url=os.getenv("GITHUB_API_URL", "https://api.github.com")),
+        code_context=code_context,
         collaboration=collaboration,
         generator=OpenAIReviewGenerator(
             api_key=openai_api_key,
@@ -93,6 +110,7 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
             max_item_chars=int(os.getenv("CONTEXT_ITEM_MAX_CHARS", "6000")),
         ),
         top_k=int(os.getenv("RAG_TOP_K", "5")),
+        rerank_pool=int(os.getenv("RAG_RERANK_POOL", "20")),
         max_generation_attempts=int(os.getenv("LLM_MAX_RETRIES", "2")),
         default_feishu_chat_ids=_csv_env("FEISHU_CHAT_IDS"),
         default_feishu_doc_tokens=_csv_env("FEISHU_DOC_TOKENS"),

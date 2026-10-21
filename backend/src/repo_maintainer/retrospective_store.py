@@ -45,7 +45,7 @@ class RetrospectiveStore(Protocol):
         incident: IncidentRecord,
         version: RetrospectiveVersion,
         publication: PublishResult,
-        chunks: list[tuple[str, list[float]]],
+        chunks: list[tuple[str, list[float], dict[str, Any]]],
     ) -> str: ...
     def search_knowledge(
         self,
@@ -63,8 +63,10 @@ class RetrospectiveStore(Protocol):
 class InMemoryRetrospectiveStore:
     """Explicitly injected test adapter. Production never selects it implicitly."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, rrf_k: int = 60, channel_pool: int = 40) -> None:
         self._lock = RLock()
+        self.rrf_k = max(1, rrf_k)
+        self.channel_pool = max(1, channel_pool)
         self._source_events: set[str] = set()
         self._incidents: dict[str, IncidentRecord] = {}
         self._evidence: dict[str, list[Evidence]] = {}
@@ -191,13 +193,12 @@ class InMemoryRetrospectiveStore:
         incident: IncidentRecord,
         version: RetrospectiveVersion,
         publication: PublishResult,
-        chunks: list[tuple[str, list[float]]],
+        chunks: list[tuple[str, list[float], dict[str, Any]]],
     ) -> str:
         with self._lock:
             knowledge_id = f"knowledge_{version.id}"
-            if any(item["knowledge_id"] == knowledge_id for item in self._knowledge):
-                return knowledge_id
-            for index, (content, embedding) in enumerate(chunks):
+            self._knowledge = [item for item in self._knowledge if item["knowledge_id"] != knowledge_id]
+            for index, (content, embedding, metadata) in enumerate(chunks):
                 self._knowledge.append(
                     {
                         "knowledge_id": knowledge_id,
@@ -209,7 +210,16 @@ class InMemoryRetrospectiveStore:
                         "content": content,
                         "embedding": list(embedding),
                         "source_url": publication.url,
-                        "metadata": {"version_id": version.id, "status": "published"},
+                        "metadata": {
+                            "version_id": version.id,
+                            "status": "published",
+                            "chunk_index": index,
+                            "keywords": version.document.keywords,
+                            "related_modules": version.document.related_modules,
+                            "severity": version.document.impact.severity,
+                            "commit_sha": incident.commit_sha,
+                            **metadata,
+                        },
                     }
                 )
             return knowledge_id
@@ -224,8 +234,13 @@ class InMemoryRetrospectiveStore:
         limit: int = 5,
     ) -> list[KnowledgeHit]:
         query_terms = {term for term in _tokenize(query) if len(term) > 1}
-        hits: list[KnowledgeHit] = []
+        pool_size = max(self.channel_pool, limit * 2)
+        scored_chunks: list[tuple[dict[str, Any], float, float]] = []
         with self._lock:
+            case_cards = {
+                item["knowledge_id"]: item
+                for item in self._knowledge if item["metadata"].get("section") == "case_card"
+            }
             for item in self._knowledge:
                 if repo_id and item["repo_id"] != repo_id:
                     continue
@@ -233,31 +248,68 @@ class InMemoryRetrospectiveStore:
                     continue
                 content_terms = set(_tokenize(f"{item['title']} {item['content']}"))
                 lexical = len(query_terms & content_terms) / max(len(query_terms), 1)
-                vector = _cosine(embedding or [], item["embedding"])
-                score = (0.4 * lexical) + (0.6 * max(vector, 0.0))
-                if score <= 0:
-                    continue
-                hits.append(
-                    KnowledgeHit(
-                        knowledge_id=item["knowledge_id"],
-                        incident_id=item["incident_id"],
-                        title=item["title"],
-                        content=item["content"],
-                        score=round(score, 6),
-                        lexical_score=round(lexical, 6),
-                        vector_score=round(vector, 6),
-                        source_url=item["source_url"],
-                        metadata=item["metadata"],
-                    )
+                vector = max(_cosine(embedding or [], item["embedding"]), 0.0)
+                if lexical > 0 or vector > 0:
+                    scored_chunks.append((item, lexical, vector))
+
+            def best_cases(channel: int) -> list[tuple[dict[str, Any], float, float]]:
+                ranked = sorted(
+                    (row for row in scored_chunks if row[channel] > 0),
+                    key=lambda row: (-row[channel], row[0]["chunk_id"]),
                 )
-        hits.sort(key=lambda item: item.score, reverse=True)
+                distinct: dict[str, tuple[dict[str, Any], float, float]] = {}
+                for row in ranked:
+                    distinct.setdefault(row[0]["knowledge_id"], row)
+                return list(distinct.values())[:pool_size]
+
+            fused: dict[str, float] = {}
+            matched_chunks: dict[str, dict[str, tuple[tuple[dict[str, Any], float, float], float]]] = {}
+            for channel_rows in (best_cases(1), best_cases(2) if embedding else []):
+                for position, row in enumerate(channel_rows, 1):
+                    item = row[0]
+                    case_id = item["knowledge_id"]
+                    contribution = 1 / (self.rrf_k + position)
+                    fused[case_id] = fused.get(case_id, 0.0) + contribution
+                    chunk_id = item["chunk_id"]
+                    case_chunks = matched_chunks.setdefault(case_id, {})
+                    previous = case_chunks.get(chunk_id)
+                    case_chunks[chunk_id] = (row, contribution + (previous[1] if previous else 0.0))
+
+            hits: list[KnowledgeHit] = []
+            for case_id, score in fused.items():
+                item, lexical, vector = max(
+                    matched_chunks[case_id].values(),
+                    key=lambda candidate: (candidate[1], candidate[0][2], candidate[0][1], candidate[0][0]["chunk_id"]),
+                )[0]
+                hit = KnowledgeHit(
+                    knowledge_id=case_id,
+                    incident_id=item["incident_id"],
+                    title=item["title"],
+                    content=case_cards.get(item["knowledge_id"], item)["content"],
+                    score=round(score, 6),
+                    lexical_score=round(lexical, 6),
+                    vector_score=round(vector, 6),
+                    source_url=item["source_url"],
+                    metadata={
+                        **item["metadata"],
+                        "matched_section": item["metadata"].get("section", ""),
+                        "case_source_evidence_ids": case_cards.get(item["knowledge_id"], item)["metadata"].get("source_evidence_ids", []),
+                        "retrieval_strategy": "rrf",
+                        "rrf_k": self.rrf_k,
+                        "candidate_pool_size": pool_size,
+                    },
+                )
+                hits.append(hit)
+        hits.sort(key=lambda item: (-item.score, item.knowledge_id))
         return hits[:limit]
 
 
 class PostgresRetrospectiveStore:
     """PostgreSQL is the production source of truth; pgvector serves embeddings."""
 
-    def __init__(self, database_url: str, schema_path: str | Path | None = None) -> None:
+    def __init__(
+        self, database_url: str, schema_path: str | Path | None = None, *, rrf_k: int = 60, channel_pool: int = 40
+    ) -> None:
         if not database_url:
             raise ValueError("DATABASE_URL is required; production storage cannot fall back to local files")
         try:
@@ -271,6 +323,8 @@ class PostgresRetrospectiveStore:
         self._Jsonb = Jsonb
         self.database_url = database_url
         self.schema_path = Path(schema_path) if schema_path else Path(__file__).with_name("retrospective_schema.sql")
+        self.rrf_k = max(1, rrf_k)
+        self.channel_pool = max(1, channel_pool)
 
     def _connect(self):
         return self._psycopg.connect(self.database_url, row_factory=self._dict_row)
@@ -523,7 +577,7 @@ class PostgresRetrospectiveStore:
         incident: IncidentRecord,
         version: RetrospectiveVersion,
         publication: PublishResult,
-        chunks: list[tuple[str, list[float]]],
+        chunks: list[tuple[str, list[float], dict[str, Any]]],
     ) -> str:
         knowledge_id = f"knowledge_{version.id}"
         with self._connect() as connection:
@@ -533,7 +587,9 @@ class PostgresRetrospectiveStore:
                     id, incident_id, retrospective_version_id, repo_id, incident_type,
                     title, source_url, status, metadata
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,'published',%s)
-                ON CONFLICT (retrospective_version_id) DO NOTHING
+                ON CONFLICT (retrospective_version_id) DO UPDATE SET
+                    title=EXCLUDED.title, source_url=EXCLUDED.source_url,
+                    status=EXCLUDED.status, metadata=EXCLUDED.metadata
                 """,
                 (
                     knowledge_id,
@@ -543,21 +599,28 @@ class PostgresRetrospectiveStore:
                     incident.incident_type,
                     version.document.title,
                     publication.url,
-                    self._Jsonb({"keywords": version.document.keywords}),
+                    self._Jsonb({
+                        "keywords": version.document.keywords,
+                        "related_modules": version.document.related_modules,
+                        "severity": version.document.impact.severity,
+                        "commit_sha": incident.commit_sha,
+                        "version_id": version.id,
+                    }),
                 ),
             )
-            for index, (content, embedding) in enumerate(chunks):
+            connection.execute("DELETE FROM knowledge_chunks WHERE knowledge_id=%s", (knowledge_id,))
+            for index, (content, embedding, metadata) in enumerate(chunks):
                 connection.execute(
                     """
                     INSERT INTO knowledge_chunks (id, knowledge_id, content, embedding, metadata)
-                    VALUES (%s,%s,%s,%s::vector,%s) ON CONFLICT (id) DO NOTHING
+                    VALUES (%s,%s,%s,%s::vector,%s)
                     """,
                     (
                         f"{knowledge_id}_{index}",
                         knowledge_id,
                         content,
                         _vector_literal(embedding),
-                        self._Jsonb({"chunk_index": index}),
+                        self._Jsonb({"chunk_index": index, **metadata}),
                     ),
                 )
         return knowledge_id
@@ -573,10 +636,13 @@ class PostgresRetrospectiveStore:
     ) -> list[KnowledgeHit]:
         filters = "AND (%(repo_id)s = '' OR k.repo_id = %(repo_id)s) AND (%(incident_type)s = '' OR k.incident_type = %(incident_type)s)"
         params: dict[str, Any] = {
-            "query": query,
+            "fts_query": " OR ".join(dict.fromkeys(_tokenize(query)[:40])),
             "repo_id": repo_id,
             "incident_type": incident_type,
             "limit": limit,
+            "pool_size": max(self.channel_pool, limit * 2),
+            "rrf_k": self.rrf_k,
+            "has_embedding": bool(embedding),
         }
         if embedding:
             params["embedding"] = _vector_literal(embedding)
@@ -584,15 +650,65 @@ class PostgresRetrospectiveStore:
         else:
             vector_sql = "0::double precision"
         sql = f"""
-            SELECT k.id AS knowledge_id, k.incident_id, k.title, c.content,
-                ts_rank_cd(to_tsvector('simple', k.title || ' ' || c.content), plainto_tsquery('simple', %(query)s)) AS lexical_score,
-                {vector_sql} AS vector_score,
-                k.source_url, k.metadata
-            FROM knowledge_entries k
-            JOIN knowledge_chunks c ON c.knowledge_id = k.id
-            WHERE k.status = 'published' {filters}
-            ORDER BY (0.4 * ts_rank_cd(to_tsvector('simple', k.title || ' ' || c.content), plainto_tsquery('simple', %(query)s))
-                + 0.6 * {vector_sql}) DESC
+            WITH scored AS (
+                SELECT k.id AS knowledge_id, k.incident_id, k.title,
+                    card.content, c.id AS matched_chunk_id,
+                    ts_rank_cd(to_tsvector('simple', k.title || ' ' || c.content), websearch_to_tsquery('simple', %(fts_query)s)) AS lexical_score,
+                    {vector_sql} AS vector_score,
+                    k.source_url, k.metadata AS entry_metadata,
+                    c.metadata AS chunk_metadata, card.metadata AS case_card_metadata
+                FROM knowledge_entries k
+                JOIN knowledge_chunks c ON c.knowledge_id = k.id
+                JOIN knowledge_chunks card ON card.id = k.id || '_0'
+                WHERE k.status = 'published' {filters}
+            ), lexical_best AS (
+                SELECT scored.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY knowledge_id ORDER BY lexical_score DESC, matched_chunk_id
+                    ) AS section_rank
+                FROM scored WHERE lexical_score > 0
+            ), lexical_ranked AS (
+                SELECT knowledge_id, matched_chunk_id,
+                    ROW_NUMBER() OVER (ORDER BY lexical_score DESC, matched_chunk_id) AS position
+                FROM lexical_best WHERE section_rank = 1
+                ORDER BY lexical_score DESC, matched_chunk_id
+                LIMIT %(pool_size)s
+            ), vector_best AS (
+                SELECT scored.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY knowledge_id ORDER BY vector_score DESC, matched_chunk_id
+                    ) AS section_rank
+                FROM scored WHERE %(has_embedding)s AND vector_score > 0
+            ), vector_ranked AS (
+                SELECT knowledge_id, matched_chunk_id,
+                    ROW_NUMBER() OVER (ORDER BY vector_score DESC, matched_chunk_id) AS position
+                FROM vector_best WHERE section_rank = 1
+                ORDER BY vector_score DESC, matched_chunk_id
+                LIMIT %(pool_size)s
+            ), fused_cases AS (
+                SELECT knowledge_id, SUM(channel_score) AS score
+                FROM (
+                    SELECT knowledge_id, 1.0 / (%(rrf_k)s + position) AS channel_score FROM lexical_ranked
+                    UNION ALL
+                    SELECT knowledge_id, 1.0 / (%(rrf_k)s + position) AS channel_score FROM vector_ranked
+                ) channels
+                GROUP BY knowledge_id
+            ), ranked AS (
+                SELECT scored.*, fused_cases.score,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY scored.knowledge_id
+                        ORDER BY (
+                            COALESCE(1.0 / (%(rrf_k)s + lexical_ranked.position), 0) +
+                            COALESCE(1.0 / (%(rrf_k)s + vector_ranked.position), 0)
+                        ) DESC, scored.vector_score DESC, scored.lexical_score DESC, scored.matched_chunk_id
+                    ) AS case_rank
+                FROM scored
+                JOIN fused_cases ON fused_cases.knowledge_id = scored.knowledge_id
+                LEFT JOIN lexical_ranked ON lexical_ranked.matched_chunk_id = scored.matched_chunk_id
+                LEFT JOIN vector_ranked ON vector_ranked.matched_chunk_id = scored.matched_chunk_id
+            )
+            SELECT * FROM ranked WHERE case_rank = 1
+            ORDER BY score DESC, knowledge_id
             LIMIT %(limit)s
         """
         with self._connect() as connection:
@@ -603,11 +719,19 @@ class PostgresRetrospectiveStore:
                 incident_id=row["incident_id"],
                 title=row["title"],
                 content=row["content"],
-                score=round((0.4 * float(row["lexical_score"])) + (0.6 * float(row["vector_score"])), 6),
+                score=round(float(row["score"]), 6),
                 lexical_score=float(row["lexical_score"]),
                 vector_score=float(row["vector_score"]),
                 source_url=row["source_url"],
-                metadata=dict(row["metadata"] or {}),
+                metadata={
+                    **dict(row["entry_metadata"] or {}),
+                    **dict(row["chunk_metadata"] or {}),
+                    "matched_section": dict(row["chunk_metadata"] or {}).get("section", ""),
+                    "case_source_evidence_ids": dict(row["case_card_metadata"] or {}).get("source_evidence_ids", []),
+                    "retrieval_strategy": "rrf",
+                    "rrf_k": self.rrf_k,
+                    "candidate_pool_size": params["pool_size"],
+                },
             )
             for row in rows
         ]

@@ -512,19 +512,42 @@ class OpenAIReviewGenerator:
                 "source_type": item.source_type.value,
                 "location": item.location,
                 "content": item.content,
+                "commit_sha": item.commit_sha,
+                "selection_reason": item.selection_reason,
+                "relation_candidates": item.metadata.get("relation", []),
             }
             for item in evidence
         ]
-        history_payload = [item.model_dump(mode="json") for item in history]
+        history_payload = [
+            {
+                "knowledge_id": item.knowledge_id,
+                "historical_incident_id": item.incident_id,
+                "title": item.title,
+                "content": item.content[:1_500],
+                "matched_section": item.metadata.get("matched_section", ""),
+                "score": item.score,
+                "source_url": item.source_url,
+            }
+            for item in history
+        ]
+        incident_payload = {
+            "id": incident.id,
+            "title": incident.title,
+            "description": incident.description[:2_000],
+            "incident_type": incident.incident_type,
+            "repo_id": incident.repo_id,
+            "commit_sha": incident.commit_sha,
+        }
         response = self.client.responses.create(
             model=self.model,
             instructions=(
                 "你是研发问题复盘助手。仅依据给定证据形成结论。根因、影响和修复方案必须引用 Evidence ID，"
-                "quote 必须逐字出现在对应证据 content 中。证据不足时明确写未知，不得编造。"
+                "quote 必须逐字出现在对应证据 content 中。代码关系仅用于寻找候选，不能单凭关系标签断言因果；"
+                "历史案例只用于类比，不能作为当前问题的 Evidence ID 引用；证据不足时明确写未知，不得编造。"
             ),
             input=json.dumps(
                 {
-                    "incident": incident.model_dump(mode="json"),
+                    "incident": incident_payload,
                     "evidence": evidence_payload,
                     "historical_cases": history_payload,
                 },

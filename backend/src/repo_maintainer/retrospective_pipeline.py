@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .retrospective_connectors import CollaborationConnector, Embedder, GitContextConnector, ReviewGenerator
+from .retrospective_code_context import RepositoryCodeContext, RepositoryContextError
 from .retrospective_models import (
     ALLOWED_STATUS_TRANSITIONS,
     Citation,
@@ -19,6 +20,7 @@ from .retrospective_models import (
     IncidentRecord,
     IncidentStatus,
     KnowledgeHit,
+    PublishResult,
     QualityReport,
     RetrospectiveDocument,
     RetrospectiveVersion,
@@ -45,6 +47,7 @@ class ContextSelector:
     SOURCE_PRIORITY = {
         EvidenceSource.CI_LOG: 100,
         EvidenceSource.GITHUB_DIFF: 95,
+        EvidenceSource.REPOSITORY_CODE: 93,
         EvidenceSource.GITHUB_PR: 90,
         EvidenceSource.GITHUB_COMMIT: 85,
         EvidenceSource.FEISHU_MESSAGE: 75,
@@ -63,6 +66,8 @@ class ContextSelector:
         seen: set[str] = set()
         for item in evidence:
             normalized = " ".join(item.content.split())
+            if item.source_type == EvidenceSource.REPOSITORY_CODE:
+                normalized = f"{item.location} {normalized}"
             fingerprint = hashlib.sha1(normalized.encode("utf-8")).hexdigest()
             if fingerprint in seen:
                 continue
@@ -71,6 +76,8 @@ class ContextSelector:
             overlap = len(query_terms & content_terms)
             priority = float(self.SOURCE_PRIORITY.get(item.source_type, 50))
             score = priority + min(overlap * 4, 40)
+            if item.source_type == EvidenceSource.REPOSITORY_CODE:
+                score += min(float(item.metadata.get("retrieval_score", 0)) / 10, 20)
             reason = f"source_priority={int(priority)}, keyword_overlap={overlap}"
             processed = item.model_copy(deep=True)
             processed.content = self._prepare_content(processed, query_terms)
@@ -79,19 +86,82 @@ class ContextSelector:
         ranked.sort(key=lambda row: (-row[0], row[1].id))
         selected: list[Evidence] = []
         used = 0
-        for _, item, reason in ranked:
+        selected_ids: set[str] = set()
+
+        def include(item: Evidence, reason: str, cap: int) -> None:
+            nonlocal used
             remaining = self.budget_chars - used
-            if remaining <= 0:
-                break
-            if len(item.content) > remaining:
-                if remaining < 300:
-                    continue
-                item.content = item.content[:remaining]
+            allowed = min(remaining, cap)
+            if allowed <= 0 or (allowed < 300 and len(item.content) > allowed):
+                return
+            if len(item.content) > allowed:
+                if item.source_type in {EvidenceSource.CI_LOG, EvidenceSource.GITHUB_DIFF} and allowed > 200:
+                    marker = "\n...<context clipped>...\n"
+                    head = (allowed - len(marker)) // 2
+                    item.content = item.content[:head] + marker + item.content[-(allowed - len(marker) - head) :]
+                else:
+                    item.content = item.content[:allowed]
                 reason += ", clipped_to_budget"
             item.selected = True
             item.selection_reason = reason
             selected.append(item)
+            selected_ids.add(item.id)
             used += len(item.content)
+
+        # Preserve several kinds of direct evidence before large logs consume the budget.
+        diverse_sources = (
+            EvidenceSource.CI_LOG,
+            EvidenceSource.GITHUB_DIFF,
+            EvidenceSource.REPOSITORY_CODE,
+            EvidenceSource.FEISHU_MESSAGE,
+            EvidenceSource.FEISHU_DOC,
+            EvidenceSource.GITHUB_PR,
+            EvidenceSource.GITHUB_COMMIT,
+        )
+        first_item_cap = min(self.max_item_chars, max(300, self.budget_chars // len(diverse_sources)))
+        for source in diverse_sources:
+            source_items = [(item, reason) for _, item, reason in ranked if item.source_type == source]
+            if source == EvidenceSource.REPOSITORY_CODE:
+                related = [
+                    pair for pair in source_items
+                    if "changed_file" not in pair[0].metadata.get("relation", [])
+                ]
+                first = (related or source_items)[0] if source_items else None
+            else:
+                first = source_items[0] if source_items else None
+            if first is not None:
+                include(first[0], first[1] + ", source_diversity", first_item_cap)
+
+        # Spread the code share across changed files before high-ranking logs or
+        # multiple regions from one file use the remaining prompt budget.
+        changed_code: list[tuple[Evidence, str]] = []
+        covered_paths: set[str] = {
+            str(item.metadata.get("file_path") or item.location.split("#L", 1)[0])
+            for item in selected
+            if item.source_type == EvidenceSource.REPOSITORY_CODE
+            and "changed_file" in item.metadata.get("relation", [])
+        }
+        for _, item, reason in ranked:
+            if item.source_type != EvidenceSource.REPOSITORY_CODE or "changed_file" not in item.metadata.get("relation", []):
+                continue
+            path = str(item.metadata.get("file_path") or item.location.split("#L", 1)[0])
+            if path not in covered_paths and item.id not in selected_ids:
+                changed_code.append((item, reason))
+                covered_paths.add(path)
+        code_budget = self.budget_chars // 2
+        code_used = sum(len(item.content) for item in selected if item.source_type == EvidenceSource.REPOSITORY_CODE)
+        if changed_code and code_budget - code_used >= 300:
+            per_file_cap = max(300, min(self.max_item_chars, (code_budget - code_used) // len(changed_code)))
+            for item, reason in changed_code:
+                remaining_code = code_budget - code_used
+                if remaining_code < 300:
+                    break
+                before = used
+                include(item, reason + ", changed_file_coverage", min(per_file_cap, remaining_code))
+                code_used += used - before
+        for _, item, reason in ranked:
+            if item.id not in selected_ids:
+                include(item, reason, self.max_item_chars)
         return ContextSelection(evidence=selected, used_chars=used, budget_chars=self.budget_chars)
 
     def _prepare_content(self, evidence: Evidence, query_terms: set[str]) -> str:
@@ -115,8 +185,10 @@ class QualityValidator:
         document: RetrospectiveDocument,
         evidence: list[Evidence],
         history: list[KnowledgeHit],
+        raw_evidence: list[Evidence] | None = None,
     ) -> QualityReport:
         evidence_map = {item.id: item for item in evidence}
+        raw_map = {item.id: item for item in raw_evidence or evidence}
         hard_errors: list[str] = []
         citations = [
             *(document.impact.citations or []),
@@ -131,6 +203,10 @@ class QualityValidator:
                 continue
             if _normalize_quote(citation.quote) not in _normalize_quote(source.content):
                 hard_errors.append(f"Quote not found in evidence {citation.evidence_id}")
+                continue
+            raw_source = raw_map.get(citation.evidence_id)
+            if raw_source is None or _normalize_quote(citation.quote) not in _normalize_quote(raw_source.content):
+                hard_errors.append(f"Quote not found in raw evidence {citation.evidence_id}")
                 continue
             valid_count += 1
         section_count = 3
@@ -186,6 +262,8 @@ class RetrospectivePipeline:
         selector: ContextSelector | None = None,
         validator: QualityValidator | None = None,
         top_k: int = 5,
+        rerank_pool: int = 20,
+        code_context: RepositoryCodeContext | None = None,
         max_generation_attempts: int = 2,
         default_feishu_chat_ids: list[str] | None = None,
         default_feishu_doc_tokens: list[str] | None = None,
@@ -198,7 +276,9 @@ class RetrospectivePipeline:
         self.github_webhook_secret = github_webhook_secret
         self.selector = selector or ContextSelector()
         self.validator = validator or QualityValidator()
-        self.top_k = top_k
+        self.top_k = max(1, min(top_k, 20))
+        self.rerank_pool = max(self.top_k, rerank_pool)
+        self.code_context = code_context
         self.max_generation_attempts = max(max_generation_attempts, 1)
         self.default_feishu_chat_ids = default_feishu_chat_ids or []
         self.default_feishu_doc_tokens = default_feishu_doc_tokens or []
@@ -256,6 +336,8 @@ class RetrospectivePipeline:
                 "delivery_id": delivery_id,
                 "merged_at": pr.get("merged_at"),
                 "author": (pr.get("user") or {}).get("login", ""),
+                "head_sha": (pr.get("head") or {}).get("sha", ""),
+                "base_sha": (pr.get("base") or {}).get("sha", ""),
             },
             feishu_chat_ids=list(self.default_feishu_chat_ids),
             feishu_doc_tokens=list(self.default_feishu_doc_tokens),
@@ -268,6 +350,14 @@ class RetrospectivePipeline:
             self._transition(incident, IncidentStatus.COLLECTING)
             incident = self.store.get_incident(incident_id)
             raw_evidence = self.git.collect(incident) + self.collaboration.collect(incident)
+            if self.code_context is not None and incident.repo_name and incident.commit_sha:
+                try:
+                    raw_evidence.extend(self.code_context.collect(incident, raw_evidence))
+                except RepositoryContextError as exc:
+                    self.store.update_incident(
+                        incident_id,
+                        metadata={**incident.metadata, "code_context_warning": str(exc)[:300]},
+                    )
             if not raw_evidence:
                 raise PipelineError("No source evidence was collected")
             self.store.add_evidence(raw_evidence)
@@ -277,11 +367,11 @@ class RetrospectivePipeline:
             self.store.add_evidence(selection.evidence)
 
             self._transition(self.store.get_incident(incident_id), IncidentStatus.RETRIEVING)
-            query = " ".join([incident.title, incident.description, incident.incident_type])
+            query = _retrieval_query(incident, selection.evidence)
             vectors = self.embedder.embed_texts([query, *[item.content for item in selection.evidence]])
             query_vector = vectors[0]
             self.store.index_evidence(selection.evidence, vectors[1:])
-            history = self.store.search_knowledge(
+            history = self._retrieve_historical_cases(
                 query,
                 query_vector,
                 repo_id=incident.repo_id,
@@ -298,7 +388,7 @@ class RetrospectivePipeline:
                     self._transition(current, IncidentStatus.GENERATING)
                 document, metadata = self.generator.generate(incident, selection.evidence, history)
                 self._transition(self.store.get_incident(incident_id), IncidentStatus.VALIDATING)
-                quality = self.validator.validate(document, raw_evidence, history)
+                quality = self.validator.validate(document, selection.evidence, history, raw_evidence)
                 last_quality, last_document, last_metadata = quality, document, metadata
                 if quality.hard_passed:
                     break
@@ -354,14 +444,15 @@ class RetrospectivePipeline:
         if incident.status != IncidentStatus.REJECTED:
             raise PipelineError("Only rejected retrospectives can be regenerated")
         all_evidence = self.store.list_evidence(incident_id)
-        selected = [item for item in all_evidence if item.selected]
-        if not selected:
+        previously_selected = [item for item in all_evidence if item.selected]
+        if not previously_selected:
             raise PipelineError("No selected evidence is available for regeneration")
+        selected = self.selector.select(incident, previously_selected).evidence
         try:
             self._transition(incident, IncidentStatus.GENERATING)
-            query = " ".join([incident.title, incident.description, incident.incident_type])
+            query = _retrieval_query(incident, selected)
             query_vector = self.embedder.embed_texts([query])[0]
-            history = self.store.search_knowledge(
+            history = self._retrieve_historical_cases(
                 query,
                 query_vector,
                 repo_id=incident.repo_id,
@@ -377,7 +468,7 @@ class RetrospectivePipeline:
                     self._transition(current, IncidentStatus.GENERATING)
                 document, metadata = self.generator.generate(incident, selected, history)
                 self._transition(self.store.get_incident(incident_id), IncidentStatus.VALIDATING)
-                quality = self.validator.validate(document, all_evidence, history)
+                quality = self.validator.validate(document, selected, history, all_evidence)
                 last_quality, last_document, last_metadata = quality, document, metadata
                 if quality.hard_passed:
                     break
@@ -462,22 +553,18 @@ class RetrospectivePipeline:
         existing = self.store.get_publication(version.id)
         if existing:
             if incident.status == IncidentStatus.APPROVED:
+                knowledge_id = self._index_published_version(incident, version, existing)
                 self.store.update_incident(incident_id, status=IncidentStatus.PUBLISHED)
-            return {"publication": existing, "knowledge_id": f"knowledge_{version.id}", "idempotent": True}
+            else:
+                knowledge_id = f"knowledge_{version.id}"
+            return {"publication": existing, "knowledge_id": knowledge_id, "idempotent": True}
         if incident.status != IncidentStatus.APPROVED:
             raise PipelineError("Only approved retrospectives can be published")
         self._transition(incident, IncidentStatus.PUBLISHING, actor=actor, action="publish")
         try:
             publication = self.collaboration.publish(incident, version.document, version.id)
             self.store.save_publication(version.id, publication)
-            chunk_texts = _knowledge_chunks(version.document)
-            embeddings = self.embedder.embed_texts(chunk_texts)
-            knowledge_id = self.store.index_knowledge(
-                incident=incident,
-                version=version,
-                publication=publication,
-                chunks=list(zip(chunk_texts, embeddings)),
-            )
+            knowledge_id = self._index_published_version(incident, version, publication)
             self._transition(self.store.get_incident(incident_id), IncidentStatus.PUBLISHED, actor=actor, action="publish")
             return {"publication": publication, "knowledge_id": knowledge_id, "idempotent": False}
         except Exception as exc:
@@ -485,6 +572,24 @@ class RetrospectivePipeline:
             if current.status == IncidentStatus.PUBLISHING:
                 self.store.update_incident(incident_id, status=IncidentStatus.APPROVED, failed_stage="publishing", error=str(exc))
             raise
+
+    def _index_published_version(
+        self, incident: IncidentRecord, version: RetrospectiveVersion, publication: PublishResult
+    ) -> str:
+        sections = _knowledge_chunks(version.document)
+        # Preserve the full card in storage while bounding each embedding input.
+        embeddings = self.embedder.embed_texts([content[:4_000] for content, _ in sections])
+        if len(embeddings) != len(sections):
+            raise PipelineError("Embedding count does not match knowledge sections")
+        return self.store.index_knowledge(
+            incident=incident,
+            version=version,
+            publication=publication,
+            chunks=[
+                (content, embedding, {**metadata, "format_version": "v3", "embedding_model": str(getattr(self.embedder, "model", ""))})
+                for (content, metadata), embedding in zip(sections, embeddings)
+            ],
+        )
 
     def search_knowledge(
         self,
@@ -495,13 +600,25 @@ class RetrospectivePipeline:
         limit: int = 5,
     ) -> list[KnowledgeHit]:
         embedding = self.embedder.embed_texts([query])[0]
-        return self.store.search_knowledge(
+        return self._retrieve_historical_cases(
             query,
             embedding,
             repo_id=repo_id,
             incident_type=incident_type,
             limit=limit,
         )
+
+    def _retrieve_historical_cases(
+        self, query: str, embedding: list[float], *, repo_id: str, incident_type: str, limit: int
+    ) -> list[KnowledgeHit]:
+        candidates = self.store.search_knowledge(
+            query,
+            embedding,
+            repo_id=repo_id,
+            incident_type=incident_type,
+            limit=max(limit, self.rerank_pool),
+        )
+        return _rerank_knowledge_hits(query, candidates, limit)
 
     def connector_status(self) -> dict[str, Any]:
         storage = self.store.healthcheck()
@@ -520,6 +637,7 @@ class RetrospectivePipeline:
             "ready": ready,
             "storage": storage,
             "github": github,
+            "code_context": {"enabled": self.code_context is not None},
             "feishu": feishu,
             "openai": openai,
         }
@@ -566,6 +684,74 @@ def _github_incident_id(repo_name: str, pr_number: int) -> str:
     return f"gh_pr_{normalized}_{pr_number}"
 
 
+def _retrieval_query(incident: IncidentRecord, evidence: list[Evidence]) -> str:
+    """Search history with failure and code clues, without embedding whole logs."""
+    parts = [incident.title, incident.description[:500], incident.incident_type]
+    for item in evidence:
+        if item.source_type == EvidenceSource.CI_LOG:
+            failure_lines = [
+                line.strip()[:220]
+                for line in item.content.splitlines()
+                if re.search(r"error|failed|exception|traceback|panic", line, re.IGNORECASE)
+            ]
+            parts.extend(failure_lines[:3])
+        elif item.source_type in {EvidenceSource.GITHUB_DIFF, EvidenceSource.REPOSITORY_CODE}:
+            parts.append(str(item.metadata.get("file_path") or item.location).split("#", 1)[0])
+            parts.extend(re.findall(r"\b(?:def|class|function)\s+([A-Za-z_][A-Za-z0-9_]*)", item.content)[:3])
+    return " ".join(dict.fromkeys(part for part in parts if part))[:1_800]
+
+
+def _rerank_knowledge_hits(query: str, hits: list[KnowledgeHit], limit: int) -> list[KnowledgeHit]:
+    if not hits:
+        return []
+    query_lower = query.lower()
+    query_terms = set(_tokens(query))
+    max_retrieval_score = max(hit.score for hit in hits) or 1.0
+    reranked: list[KnowledgeHit] = []
+    for hit in hits:
+        modules = hit.metadata.get("related_modules") or []
+        keywords = hit.metadata.get("keywords") or []
+        module_match = _metadata_match_fraction(modules, query_lower, path_stems=True)
+        keyword_match = _metadata_match_fraction(keywords, query_lower)
+        title_terms = set(_tokens(hit.title))
+        title_match = len(title_terms & query_terms) / max(len(title_terms), 1)
+        retrieval_match = hit.score / max_retrieval_score
+        score = 0.75 * retrieval_match + 0.12 * module_match + 0.08 * keyword_match + 0.05 * title_match
+        reranked.append(hit.model_copy(update={
+            "score": round(score, 6),
+            "metadata": {
+                **hit.metadata,
+                "retrieval_score": hit.score,
+                "rerank_strategy": "structured_v1",
+                "rerank_features": {
+                    "module_match": round(module_match, 4),
+                    "keyword_match": round(keyword_match, 4),
+                    "title_match": round(title_match, 4),
+                },
+            },
+        }))
+    reranked.sort(key=lambda item: (-item.score, item.knowledge_id))
+    return reranked[:limit]
+
+
+def _metadata_match_fraction(values: Any, query_lower: str, *, path_stems: bool = False) -> float:
+    if not isinstance(values, list):
+        return 0.0
+    normalized = [str(value).lower().strip() for value in values if str(value).strip()]
+    if not normalized:
+        return 0.0
+    matched = 0
+    for value in normalized:
+        alternatives = {value}
+        if path_stems:
+            basename = value.replace("\\", "/").rsplit("/", 1)[-1]
+            alternatives.add(basename)
+            alternatives.add(basename.rsplit(".", 1)[0])
+        if any(term and term in query_lower for term in alternatives):
+            matched += 1
+    return matched / len(normalized)
+
+
 def _tokens(value: str) -> list[str]:
     return re.findall(r"[\w.-]+", value.lower(), flags=re.UNICODE)
 
@@ -597,9 +783,52 @@ def _document_citations(document: RetrospectiveDocument) -> list[Citation]:
     return [*document.impact.citations, *document.root_cause.citations, *document.fix_solution.citations]
 
 
-def _knowledge_chunks(document: RetrospectiveDocument) -> list[str]:
-    return [
-        f"{document.title}\n问题摘要：{document.summary}\n影响：{document.impact.scope}",
-        f"根因：{document.root_cause.content}\n修复：{document.fix_solution.content}",
-        "预防：" + "；".join(document.prevention) + "\n模块：" + "、".join(document.related_modules),
+def _knowledge_chunks(document: RetrospectiveDocument) -> list[tuple[str, dict[str, Any]]]:
+    all_ids = sorted({item.evidence_id for item in _document_citations(document)})
+    impact_ids = sorted({item.evidence_id for item in document.impact.citations})
+    cause_ids = sorted({item.evidence_id for item in document.root_cause.citations})
+    fix_ids = sorted({item.evidence_id for item in document.fix_solution.citations})
+    title = f"问题：{document.title}"
+    modules = "、".join(document.related_modules)
+    prevention = "；".join(document.prevention)
+    sections = [
+        (
+            f"{title}\n根因：{document.root_cause.content}\n修复：{document.fix_solution.content}"
+            f"\n故障摘要：{document.summary}\n影响：{document.impact.scope}（{document.impact.severity}）"
+            f"\n预防：{prevention}\n模块：{modules}\n关键词：{'、'.join(document.keywords)}",
+            {"section": "case_card", "source_evidence_ids": all_ids},
+        ),
     ]
+    section_bodies = [
+        ("symptoms", f"故障摘要：{document.summary}\n影响：{document.impact.scope}（{document.impact.severity}）\n模块：{modules}\n关键词：{'、'.join(document.keywords)}", impact_ids),
+        ("root_cause", f"根因：{document.root_cause.content}", cause_ids),
+        ("fix_solution", f"修复：{document.fix_solution.content}", fix_ids),
+        ("prevention", f"预防：{prevention}\n模块：{modules}", []),
+    ]
+    for section, body, evidence_ids in section_bodies:
+        sections.extend(_split_knowledge_section(document.title, section, body, evidence_ids))
+    return sections
+
+
+def _split_knowledge_section(
+    title: str, section: str, body: str, evidence_ids: list[str], *, max_chars: int = 1_200, overlap_chars: int = 100
+) -> list[tuple[str, dict[str, Any]]]:
+    prefix = f"问题：{title[:160]}\n"
+    capacity = max_chars - len(prefix)
+    chunks: list[tuple[str, dict[str, Any]]] = []
+    start = 0
+    while start < len(body):
+        end = min(len(body), start + capacity)
+        if end < len(body):
+            boundaries = [body.rfind(marker, start + capacity // 2, end) for marker in ("\n", "。", "；", ";")]
+            boundary = max(boundaries)
+            if boundary >= 0:
+                end = boundary + 1
+        chunks.append((
+            prefix + body[start:end],
+            {"section": section, "segment_index": len(chunks), "source_evidence_ids": evidence_ids},
+        ))
+        if end == len(body):
+            break
+        start = max(start + 1, end - overlap_chars)
+    return chunks

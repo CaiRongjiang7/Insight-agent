@@ -2,14 +2,17 @@
 
 面向合并 PR 和手工问题的证据化复盘工作流：自动汇聚 GitHub、飞书和历史知识上下文，生成带原文引用的结构化复盘，经人工审核后发布到飞书 Wiki，并回流 PostgreSQL/pgvector 供后续问题召回。
 
+项目整体组件、数据流、主链路与旧平台边界、部署配置和持续升级记录见[项目架构文档](docs/architecture.md)。后续架构升级须同步维护该文档，要求见 [AGENTS.md](AGENTS.md)。
+
 ## 核心闭环
 
 ```text
 GitHub merged PR Webhook / 手工创建
   -> GitHub PR、commit、diff、评论和 CI 日志
+  -> 固定 PR 代码版本，按 diff/错误栈定位函数并扩展调用、导入和测试关联源码
   -> 飞书指定群消息、文档上下文
-  -> PostgreSQL 全文检索 + pgvector 历史案例召回
   -> 上下文去重、日志/差异裁剪和预算控制
+  -> PostgreSQL 全文检索 + pgvector 历史案例召回与精排
   -> OpenAI Responses API 结构化复盘
   -> Evidence ID 与原文引用硬校验
   -> 人工编辑、通过或驳回
@@ -26,13 +29,17 @@ GitHub merged PR Webhook / 手工创建
 | API / 状态机 | FastAPI、Pydantic，固定状态迁移 |
 | 异步任务 | Celery + Redis |
 | 事实存储 | PostgreSQL |
-| 语义检索 | pgvector + PostgreSQL 全文检索加权融合 |
+| 语义检索 | pgvector + PostgreSQL 全文检索，按案例 RRF 融合与规则精排 |
 | 模型生成 | 官方 OpenAI Python SDK、Responses API、Function Calling + Pydantic 校验 |
-| 外部上下文 | GitHub REST API、飞书开放平台 |
+| 外部上下文 | GitHub REST API、指定 commit 的仓库源码、飞书开放平台 |
 | 管理台 | Vue 3 + Element Plus |
 | 部署 | Docker Compose |
 
 生产核心链路不会静默回退到 JSON、SQLite、FAISS 或内存存储；内存适配器仅供单元测试显式注入。
+
+代码上下文会从 PR 的 head commit（缺失时使用记录的 commit）下载同仓库的只读 ZIP 归档到临时目录，并非读取 Agent 工作区的本地文件。它将改动函数、未改动的调用方/被调用方、导入模块及相关测试转为带 commit、文件和行号的 Evidence；对能唯一定位目标文件的调用和导入边，还会查找距改动文件两跳的候选。基础候选上限为 10 个文件；多个 diff 文件时按改动文件数自适应扩展，最多 40 个，每文件最多取 2 个不同改动区域。进入模型的片段仍受总上下文预算限制。静态图关系只用于寻找候选，复盘结论仍需引用源码或其他原始证据。仓库归档不可用时，任务继续使用已收集的 PR、CI 和飞书证据，并在问题元数据记录 `code_context_warning`。
+
+审核并发布后的结构化复盘会进入 RAG 知识库：保存完整版本，以案例主卡片、故障症状、根因、修复方案、预防措施五类语义片段建立索引；长字段分段，并保留原始 Evidence ID。全文和向量检索各取候选，使用 RRF 合并，按案例去重后根据模块、关键词和标题精排，默认返回 5 个历史案例。历史案例只作类比，当前问题的结论仍须引用当前 Evidence。切片、候选池和排序参数可通过 `RAG_CHANNEL_POOL=40`、`RAG_RRF_K=60`、`RAG_RERANK_POOL=20`、`RAG_TOP_K=5` 调整；设置依据和限制见[证据与上下文管理台账](docs/evidence-context-ledger.md)。
 
 ## Docker 一键启动
 
@@ -48,13 +55,14 @@ docker compose ps
 
 启动后：
 
-- 管理台：`http://localhost:5173/retrospective`
-- API：`http://localhost:8000`
-- 健康检查：`http://localhost:8000/api/health`
-- 连接器状态：`http://localhost:8000/api/connectors/status`
-- GitHub Webhook：`http://<可访问地址>:8000/webhooks/github`
+- 管理台：`http://localhost/retrospective`
+- API 前缀：`http://localhost/api`
+- 健康检查：`http://localhost/api/health`
+- 连接器状态：`http://localhost/api/connectors/status`
+- 历史案例检索：`GET http://localhost/api/retrospective/knowledge/search?q=关键词&repo_id=仓库ID`
+- GitHub Webhook：`http://<可访问地址>/webhooks/github`
 
-`migrate` 容器会创建 vector 扩展和业务表；`api` 与 `worker` 只有在 PostgreSQL、Redis 及外部连接配置完整时才报告核心链路就绪。
+当前 Compose 将 Nginx 暴露在主机 80 端口，并将 API 8000 保留在容器网络中；本地 Vite 开发端口为 5173。`migrate` 容器创建 vector 扩展和业务表；`/api/health` 与 `/api/connectors/status` 用于检查业务依赖配置及存储就绪，Compose 的 API 探针使用 `/api/liveness`，真实外部权限与 Worker 消费能力仍需联调。
 
 ## 必填配置
 
@@ -107,9 +115,9 @@ EMBEDDING_MODEL=qwen3.7-text-embedding-flash
    | Events | Let me select individual events，只勾选 Pull requests |
    | Active | 勾选 |
 
-   GitHub 无法访问 `localhost`。本机联调时，需要先用 HTTPS 隧道把 `localhost:8000` 暴露出去，再把隧道地址拼成 `https://<隧道域名>/webhooks/github`。如果公网反向代理指向前端 `5173`，Nginx 也会把 `/webhooks/` 转发给 API。
+   GitHub 无法访问 `localhost`。按默认 Compose 启动时，用 HTTPS 隧道将 Nginx 的 `localhost:80` 暴露出去，再把隧道地址拼成 `https://<隧道域名>/webhooks/github`，Nginx 会把 `/webhooks/` 转发给 API。直接运行本地 API 时也可将 `localhost:8000` 暴露出去；Vite 开发服务当前只代理 `/api`。
 
-3. `GITHUB_TOKEN` 推荐使用 Fine-grained personal access token，只授权目标仓库，并开启 `Pull requests: Read` 和 `Actions: Read`；前者覆盖 PR、diff、commit 和 PR 评论读取，后者用于读取失败的 Actions 运行及日志。
+3. `GITHUB_TOKEN` 推荐使用 Fine-grained personal access token，只授权目标仓库，并开启 `Pull requests: Read`、`Actions: Read` 和 `Contents: Read`；分别用于 PR 取证、失败的 Actions 运行及日志，以及按 commit SHA 下载[仓库 ZIP 归档](https://docs.github.com/en/rest/repos/contents?apiVersion=2022-11-28#download-a-repository-archive-zip)以读取 diff 之外的源码。
 4. 保存 Webhook 后，GitHub 会先发送 `ping`。真正触发复盘的事件必须是 `pull_request` 且 payload 同时满足 `action=closed`、`pull_request.merged=true`。在 Webhook 的 `Recent Deliveries` 中应看到接口返回 `202`；签名错误会返回 `401`。
 
 修改 `.env` 后执行：
@@ -161,7 +169,7 @@ docker compose --env-file .env up -d --force-recreate api worker
    FEISHU_WIKI_PARENT_NODE_TOKEN=wikcn_xxx
    ```
 
-6. 把应用/机器人加入目标知识空间并授予编辑权限，同时确保应用有权访问 `FEISHU_DOC_TOKENS` 指定的文档。完成后重建 `api`、`worker`，再检查 `http://localhost:8000/api/health` 和 `http://localhost:8000/api/connectors/status`。
+6. 把应用/机器人加入目标知识空间并授予编辑权限，同时确保应用有权访问 `FEISHU_DOC_TOKENS` 指定的文档。完成后重建 `api`、`worker`，再检查 `http://localhost/api/health` 和 `http://localhost/api/connectors/status`。
 
 ## 使用流程
 
@@ -224,4 +232,4 @@ compose.yaml
 docs/
 ```
 
-需求范围、实施顺序和验收方法分别见 [product-requirements.md](docs/product-requirements.md)、[implementation-plan.md](docs/implementation-plan.md) 和 [acceptance-criteria.md](docs/acceptance-criteria.md)。当前完成度与待真实联调项见 [implementation-status.md](docs/implementation-status.md)，旧方案取舍见 [legacy-solution-review.md](docs/legacy-solution-review.md)。
+需求范围、实施顺序和验收方法分别见 [product-requirements.md](docs/product-requirements.md)、[implementation-plan.md](docs/implementation-plan.md) 和 [acceptance-criteria.md](docs/acceptance-criteria.md)。证据来源、上下文管理和后续方案变更统一记录在 [智能复盘证据与上下文台账](docs/evidence-context-ledger.md)。当前完成度与待真实联调项见 [implementation-status.md](docs/implementation-status.md)，旧方案取舍见 [legacy-solution-review.md](docs/legacy-solution-review.md)。
