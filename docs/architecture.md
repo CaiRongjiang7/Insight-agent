@@ -2,8 +2,8 @@
 
 | 文档属性 | 当前值 |
 | --- | --- |
-| 最近核对日期 | 2026-10-27（Asia/Shanghai；本次仅核对长上下文研究并明确输入控制的工程动机；实现/隔离测试沿用 2026-10-23，真实平台演练沿用 2026-10-21） |
-| 核对基线 | 当前工作区实现与隔离测试容器；新增快照表已在隔离 PostgreSQL 验证，未更新原演练或生产部署；此前未提交改动保留 |
+| 最近核对日期 | 2026-10-27（Asia/Shanghai；局部核对标准只读 Tool、源码会话、模型回放与轨迹；既有研究核对保留，真实平台演练沿用 2026-10-21） |
+| 核对基线 | codex/standard-tools-upgrade 工作区，基线 main/63aecdd；77 项针对性测试含隔离 PostgreSQL；未更新原演练或生产部署 |
 | 文档职责 | 记录整个项目当前架构、组件边界、数据流、部署、已知缺口及后续升级 |
 | 维护规则 | 架构相关改动必须在同一次改动中更新本文，规则见 [AGENTS.md](../AGENTS.md) |
 | 专项台账 | [证据与上下文管理台账](evidence-context-ledger.md)记录取证、上下文和 RAG 的详细方法及依据 |
@@ -41,6 +41,12 @@ flowchart LR
     Code -. "默认关闭：一次符号规划" .-> Model
     Legacy --> Indexer
     Worker --> Model["模型生成 / Embedding 接口"]
+    Worker -. "显式启用" .-> Tools["标准只读 Tool 执行器"]
+    Model -. "function_call" .-> Tools
+    Tools -. "call_id 结果" .-> Model
+    Tools --> Code
+    Tools --> Cached["已采集飞书窗口（内存）"]
+    Tools --> DB
     Main --> DB["PostgreSQL / pgvector"]
     Worker --> DB
     Main --> Wiki["飞书 Wiki 发布"]
@@ -63,6 +69,7 @@ flowchart LR
 | [retrospective_connectors.py](../backend/src/repo_maintainer/retrospective_connectors.py) | GitHub/飞书取证、Token 缓存、Wiki 发布、结构化模型生成与向量化 |
 | [retrospective_code_context.py](../backend/src/repo_maintainer/retrospective_code_context.py) | 固定版本 ZIP 归档、源码候选、AST 区域和两跳关系扩展；复用 [repo_indexer.py](../backend/src/repo_maintainer/repo_indexer.py) |
 | [retrospective_discovery.py](../backend/src/repo_maintainer/retrospective_discovery.py) | Python 方法、导入别名、直接继承、有界邻居与同仓库服务文档映射 |
+| [retrospective_tools.py](../backend/src/repo_maintainer/retrospective_tools.py) | 三个标准只读工具、Pydantic/JSON Schema、注册表、范围/预算校验、缓存与原文窗口 |
 | [retrospective_store.py](../backend/src/repo_maintainer/retrospective_store.py) / [retrospective_schema.sql](../backend/src/repo_maintainer/retrospective_schema.sql) | 存储接口、PostgreSQL 业务持久化与检索、显式测试内存适配器、数据库建表 |
 | [retrospective_migrate.py](../backend/src/repo_maintainer/retrospective_migrate.py) | 执行现有建表 SQL；当前没有版本化增量迁移框架 |
 | [platform.py](../backend/src/repo_maintainer/platform.py) / [frontend_service.py](../backend/src/repo_maintainer/frontend_service.py) | 旧修复平台与兼容管理台数据组装，详见第 8 节 |
@@ -86,6 +93,16 @@ flowchart LR
 8. **人工处理。** 编辑生成新的人工作品版本；通过进入 `approved`，驳回记录理由。驳回后可基于已入库且先前选中的原文重新选择上下文并生成。
 
 结构化输出包含标题、摘要、影响、根因、修复、预防措施、关联模块和关键词。影响、根因与修复必须包含引用。原文是当前问题的材料；静态图边是候选线索；协作消息是参与者陈述；历史案例是类比。引文存在性校验不能自动证明根因判断正确，审核人仍需核对支持关系。
+
+#### 可选标准工具补证（2026-10-27）
+
+`REVIEW_TOOLS_ENABLED=1` 时，在 retrieving 阶段、独立写作前执行三个标准只读 Function Tools，最多两轮模型决策和累计四次实际工具执行。每轮最多 700 输出 Token、15 秒、禁用 SDK 重试；初始视图最多 8,000 证据字符、12 条及两张短历史卡。工具正文共享 8,000 字符，重复调用只返回已给过的 ID，不重复正文。工具执行间检查 30 秒软期限；同步历史检索内部仍沿用连接器超时，不保证硬中断。关闭时保持原流程，自定义生成器不支持工具协议时兼容原路径。
+
+代码采集和工具共用一个 source.open、仓库索引和 Python 方法索引；会话文件总量受 max_expanded_files、每文件区域额度约束。工具只接受服务端固定事故/仓库/SHA；飞书工具搜索本次已采集群/文档，历史查询继承仓库与类型过滤。新代码先存原文，再返回受限片段；文档/历史按命中位置取窗口，历史仍是 KnowledgeHit。
+
+补证结束后独立重选上下文，对工具实际请求过的证据增加 15 的候选排序分（不代表真实性），只在最终选择后登记 selected；工具前的初始选择不登记为最终采用。窗口原文、截断标记及历史命中窗口进入最终生成；最终未采用的请求 ID 记入轨迹。最后一轮工具结果通过最终证据包进入写作，而非把整段探索历史重复拼入最终请求。最终 writer 只接受 submit_retrospective，仍执行双层引文校验和人工审核，AI prompt_version 为 v3-standard-tools。
+
+请求、响应项目、call_id 工具结果、停止原因和最终选择写入已有 generation_contexts，以 run_id 关联。失败规划保留静态材料，工具为空/失败/预算耗尽不能当作排除证据；达到轮次或模型失败时附软提示。无新增 API、表或队列。驳回重生不重开归档或重跑工具；旧任务跨重试 selected 标记累积仍是历史限制。
 
 ### 4.2 状态机与失败恢复
 
@@ -111,6 +128,7 @@ flowchart LR
 | --- | --- | --- |
 | 源码扩展 | 基础 10 个候选文件；按改动文件数最多扩至 40 个；每文件最多 2 个区域，每段约 2,400 字符；唯一目标文件的调用/导入边可扩两跳 | [源码收集器](../backend/src/repo_maintainer/retrospective_code_context.py) |
 | 证据筛选 | 内容指纹去重、来源与相关性排序、来源覆盖、多改动文件覆盖；日志取错误附近行，diff 选相关 hunk | [ContextSelector](../backend/src/repo_maintainer/retrospective_pipeline.py) |
+| 标准工具（可选） | 默认关闭；三个只读工具；两轮/四次执行；8,000 工具正文字符；最终写作另行筛选 | [Tool 执行器](../backend/src/repo_maintainer/retrospective_tools.py)及[方案](standard-tools-upgrade.md) |
 | 模型证据预算 | 24,000 字符总预算，单条配置上限 6,000 字符；属于字符计量，未覆盖整个请求的精确 Token 预算 | [运行配置](../backend/src/repo_maintainer/retrospective_runtime.py) |
 | 知识切片 | 五类：完整案例卡、症状、根因、修复、预防；长字段约 1,200 字符一段、重叠约 100；保存格式版本与来源 ID | [切片实现](../backend/src/repo_maintainer/retrospective_pipeline.py) |
 | 历史召回 | 仓库与类型过滤；全文和向量各按案例取最佳片段，再各取 40 个案例，RRF 常数 60 | [存储检索](../backend/src/repo_maintainer/retrospective_store.py) |
@@ -215,7 +233,7 @@ Axios 默认请求 `/api`，默认超时 15 秒。同步重新生成、发布和
 
 持续追踪以下缺口；实施后更新相关章节、验证结果和变更记录：
 
-2026-10-23 已按[设计稿](incident-context-discovery-design.md)实施低成本子集：Python 方法优先、显式同仓库服务文档映射、默认关闭的一次符号规划和数据库输入快照。完整工具循环、跨仓库取证、生产拓扑与运行证据连接器仍未实现。
+当前已实现轻量方法发现、显式同仓库服务文档导航、输入快照，以及默认关闭的[标准 Tool 有界循环](standard-tools-upgrade.md)。跨仓库取证、部署版本解析、生产拓扑与运行证据连接器仍未实现；不从 77 项隔离测试推断真实模型质量或生产效果。
 
 - 请求级精确 Token 预算尚未实现；新生成已存逻辑输入快照，旧生成无法仅凭 Evidence ID 复原；未存失败响应全文，也未验证跨版本自动重放。
 - 源码主要分析修复后的固定 head 版本；修复前后的双版本对照、动态调用与跨服务运行关系仍需增强。
@@ -260,5 +278,6 @@ Axios 默认请求 `/api`，默认超时 15 秒。同步重新生成、发布和
 | 2026-10-27 | 为代码探索预算补充可核查论文依据，区分位置偏差、行为退化与注意力机制 | 新增[研究说明](long-context-budget-evidence.md)并更新台账；不改组件、模型、预算、数据流或部署 | 核对原始论文表格/图与技术报告、版本和实验限制，检查本地链接；未重跑代码测试或模型实验 | 无迁移；研究不证明当前模型或既有参数最优，项目消融仍待执行 |
 | 2026-10-27 | 补核 2026 年新模型及相反结果，避免用旧模型直接论证当前能力 | 更新研究说明与证据台账，预算依据收窄为证据组织及质量/成本，运行架构不变 | 核对 LURCH、Mastra、CliffCompaction、Distractor-Aware Truncation、Classifier 的原文、实际模型、日期及实验限制；本地链接检查；未执行新模型实验 | 无迁移；当前字符预算保持，尚无本项目质量/成本对照，近期预印本与企业报告也不能证明普遍退化 |
 | 2026-10-27 | 明确研究只需支持长上下文仍可能受干扰，将输入控制必要性与参数调优分开 | 研究说明与台账强调选择飞书/源码证据、避免无界堆积；组件和运行策略不变 | 复核 Classifier 原文及既有近期研究，核对文档一致性和本地链接；未运行新模型实验 | 无迁移；不要求通用失效阈值，不宣称固定预算最优，仍须防止裁剪遗漏关键证据 |
+| 2026-10-27 | 按先沉淀方案、后新分支实施的顺序接入标准只读 Tool | 新增 registry/executor、同快照会话、有界模型工具循环、结果回送与轨迹；新增开关默认关闭，最终审核/发布不交给模型 | 77 项针对性回归含隔离 PostgreSQL 通过；Mock 验证协议/回放、预算、缓存、失败回退、证据身份与持久化；Compose 和本地链接核对 | 复用现有表，无新 API/依赖/迁移（旧部署需已有 generation_contexts）；未真实调用百炼/GitHub/飞书或更新运行环境；历史检索超时为同步连接器边界，仍无整体 Token 硬限额 |
 
 后续追加记录使用上述列结构；不要用新行替代正文更新，也不要覆盖历史行。

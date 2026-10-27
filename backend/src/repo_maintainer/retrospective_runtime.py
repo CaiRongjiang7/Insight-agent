@@ -83,6 +83,7 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
     )
     generator.discovery_recorder = lambda incident, request: record_generation_context(
         store, incident, 'code_discovery', request, scope='provider_request')
+    tools_enabled = _optional_bool_env('REVIEW_TOOLS_ENABLED') is True
     code_context = None
     if os.getenv("CODE_CONTEXT_ENABLED", "1").strip().lower() not in {"0", "false", "no"}:
         code_context = RepositoryCodeContext(
@@ -94,7 +95,7 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
             max_files=int(os.getenv("CODE_CONTEXT_MAX_FILES", "10")),
             max_expanded_files=int(os.getenv("CODE_CONTEXT_MAX_EXPANDED_FILES", "40")),
             planner=(generator.plan_code_context
-                     if _optional_bool_env('CODE_CONTEXT_PLANNER_ENABLED') is True else None),
+                     if _optional_bool_env('CODE_CONTEXT_PLANNER_ENABLED') is True and not tools_enabled else None),
         )
     return RetrospectivePipeline(
         store=store,
@@ -118,6 +119,7 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
         max_generation_attempts=int(os.getenv("LLM_MAX_RETRIES", "2")),
         default_feishu_chat_ids=_csv_env("FEISHU_CHAT_IDS"),
         default_feishu_doc_tokens=_csv_env("FEISHU_DOC_TOKENS"),
+        tools_enabled=tools_enabled,
     )
 
 

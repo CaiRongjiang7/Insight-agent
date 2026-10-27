@@ -63,3 +63,17 @@ docker compose -f compose.e2e.yaml down -v
 最终 40 项针对性回归全部通过，包含真实临时 PostgreSQL 用例；Compose 配置及 API/Worker 参数转发实查通过。未重跑完整 UI E2E。
 
 本次在现有依赖镜像中只读挂载 src/tests，临时运行目录写容器内部，模型与外部采集均用 Fake/Mock；另在无主机端口、无持久卷的临时 PostgreSQL 上验证新增表。此范围不同于完整 UI E2E、真实平台和生产部署验收。完整上下文快照仅存数据库，没有新增 HTTP 读取接口。
+
+## 2026-10-27 标准 Tool 升级验收
+
+升级说明见[标准 Tool 方案](standard-tools-upgrade.md)。`REVIEW_TOOLS_ENABLED=0` 默认保留原路径；显式设 1 才启用三个只读取证 Tools，且不叠加 CODE_CONTEXT_PLANNER_ENABLED 的旧规划。模型调用以 Function Calling 回送结果，审批/发布仍由现有流程控制。无新表/依赖/API，旧部署须已有 generation_contexts。
+
+针对性入口（PYTHONPATH 包含 src/tests）：
+
+```text
+python -m unittest test_retrospective_pipeline test_review_model_options test_embedding_batches test_context_discovery test_repository_tool_session test_retrospective_tools test_retrospective_tool_loop test_standard_tool_adapter -q
+```
+
+77 项全部通过，包含两项配置 TEST_CONTEXT_DATABASE_URL 后才执行的独立 PostgreSQL 测试：幂等建表/快照读写，以及完整 Tool 请求/结果/新证据/最终引用入库。数据库无主机端口、无持久卷，模型与外部采集使用 Fake/Mock。未配置测试库时这两项跳过，不等于已验证数据库。
+
+新增测试覆盖单会话/索引复用与关闭、严格 Schema、同名歧义、范围过滤、两轮/四次执行、正文预算/缓存、长文档窗口、截断标记、所有 call_id 配对、reasoning 项回放、初始/最终 selected 分离、规划失败回退与重生复用。Compose 开关转发与文档本地链接另行检查。本次未重跑完整 UI E2E，未真实调用百炼/GitHub/飞书或更新运行环境。
