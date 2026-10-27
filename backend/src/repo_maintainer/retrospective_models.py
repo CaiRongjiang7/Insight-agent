@@ -225,3 +225,13 @@ class GenerationMetadata(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     duration_ms: int = 0
+
+
+class GenerationContext(BaseModel):
+    """Immutable input saved before each generation call, including failed calls."""
+
+    id: str = Field(default_factory=lambda: new_id('ctx'))
+    incident_id: str
+    payload: dict[str, Any]
+    content_hash: str
+    created_at: str = Field(default_factory=utc_now)

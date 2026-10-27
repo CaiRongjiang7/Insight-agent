@@ -1,0 +1,16 @@
+{
+  "services": [
+    {
+      "id": "image-inference",
+      "paths": ["demo"],
+      "dependencies": ["nacos-sdk"],
+      "docs": ["docs/architecture.md"]
+    },
+    {
+      "id": "nacos-sdk",
+      "paths": ["v2/nacos"],
+      "dependencies": [],
+      "docs": ["docs/evidence-context-ledger.md"]
+    }
+  ]
+}

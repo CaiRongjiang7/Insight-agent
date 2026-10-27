@@ -27,7 +27,7 @@ from .retrospective_models import (
     ReviewAction,
     new_id,
 )
-from .retrospective_store import RetrospectiveStore
+from .retrospective_store import RetrospectiveStore, record_generation_context
 
 
 class PipelineError(RuntimeError):
@@ -95,6 +95,8 @@ class ContextSelector:
             if allowed <= 0 or (allowed < 300 and len(item.content) > allowed):
                 return
             if len(item.content) > allowed:
+                if item.source_type == EvidenceSource.REPOSITORY_CODE:
+                    item.metadata['region_complete'] = False
                 if item.source_type in {EvidenceSource.CI_LOG, EvidenceSource.GITHUB_DIFF} and allowed > 200:
                     marker = "\n...<context clipped>...\n"
                     head = (allowed - len(marker)) // 2
@@ -172,6 +174,8 @@ class ContextSelector:
             content = _select_diff_hunks(content, query_terms)
         if len(content) <= self.max_item_chars:
             return content
+        if evidence.source_type == EvidenceSource.REPOSITORY_CODE:
+            evidence.metadata['region_complete'] = False
         head = self.max_item_chars // 2
         tail = self.max_item_chars - head
         return f"{content[:head]}\n...<context clipped>...\n{content[-tail:]}"
@@ -291,6 +295,21 @@ class RetrospectivePipeline:
             data["feishu_doc_tokens"] = list(self.default_feishu_doc_tokens)
         return self.store.create_incident(IncidentRecord(**data))
 
+    def _generate(self, incident, evidence, history):
+        build_request = getattr(self.generator, 'build_request', None)
+        generate_request = getattr(self.generator, 'generate_request', None)
+        if callable(build_request) and callable(generate_request):
+            request = build_request(incident, evidence, history)
+            record_generation_context(self.store, incident, 'retrospective', request,
+                                      scope='provider_request', evidence_ids=[e.id for e in evidence])
+            return generate_request(request)
+        record_generation_context(self.store, incident, 'retrospective', {
+            'incident': incident.model_dump(mode='json'),
+            'evidence': [e.model_dump(mode='json') for e in evidence],
+            'history': [h.model_dump(mode='json') for h in history],
+        }, scope='generator_arguments')
+        return self.generator.generate(incident, evidence, history)
+
     def ingest_github_webhook(
         self,
         *,
@@ -386,7 +405,12 @@ class RetrospectivePipeline:
                 current = self.store.get_incident(incident_id)
                 if current.status != IncidentStatus.GENERATING:
                     self._transition(current, IncidentStatus.GENERATING)
-                document, metadata = self.generator.generate(incident, selection.evidence, history)
+                generation_incident = incident
+                if last_quality is not None:
+                    generation_incident = incident.model_copy(update={
+                        "metadata": {**incident.metadata, "generation_validation_errors": last_quality.hard_errors},
+                    })
+                document, metadata = self._generate(generation_incident, selection.evidence, history)
                 self._transition(self.store.get_incident(incident_id), IncidentStatus.VALIDATING)
                 quality = self.validator.validate(document, selection.evidence, history, raw_evidence)
                 last_quality, last_document, last_metadata = quality, document, metadata
@@ -407,6 +431,7 @@ class RetrospectivePipeline:
                 quality=last_quality,
                 evidence_ids=[item.id for item in selection.evidence],
                 model=last_metadata.model,
+                prompt_version='v2-symbol-context',
                 input_tokens=last_metadata.input_tokens,
                 output_tokens=last_metadata.output_tokens,
                 duration_ms=last_metadata.duration_ms,
@@ -466,7 +491,12 @@ class RetrospectivePipeline:
                 current = self.store.get_incident(incident_id)
                 if current.status != IncidentStatus.GENERATING:
                     self._transition(current, IncidentStatus.GENERATING)
-                document, metadata = self.generator.generate(incident, selected, history)
+                generation_incident = incident
+                if last_quality is not None:
+                    generation_incident = incident.model_copy(update={
+                        "metadata": {**incident.metadata, "generation_validation_errors": last_quality.hard_errors},
+                    })
+                document, metadata = self._generate(generation_incident, selected, history)
                 self._transition(self.store.get_incident(incident_id), IncidentStatus.VALIDATING)
                 quality = self.validator.validate(document, selected, history, all_evidence)
                 last_quality, last_document, last_metadata = quality, document, metadata
@@ -484,6 +514,7 @@ class RetrospectivePipeline:
                 quality=last_quality,
                 evidence_ids=[item.id for item in selected],
                 model=last_metadata.model,
+                prompt_version='v2-symbol-context',
                 input_tokens=last_metadata.input_tokens,
                 output_tokens=last_metadata.output_tokens,
                 duration_ms=last_metadata.duration_ms,

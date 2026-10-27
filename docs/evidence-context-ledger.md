@@ -1,6 +1,6 @@
 # 智能复盘证据来源与上下文管理台账
 
-> 当前实现基线：2026-09-28；最近文档核对：2026-10-01。本文只描述 `RetrospectivePipeline` 智能复盘主链路；整个项目的组件关系与部署见[项目架构文档](architecture.md)。旧代码修复 Agent 的记忆和 Token 预算不是本链路的运行机制。**每次修改复盘方案或实现时，同步修订相关章节，并在文末追加变更记录。**
+> 当前实现基线：2026-10-23（局部升级源码发现与输入快照；其他行为沿用既有记录）；最近文档核对：2026-10-23（局部代码与隔离 PostgreSQL 验证，真实平台演练沿用 2026-10-21）。本文只描述 `RetrospectivePipeline` 智能复盘主链路；整个项目的组件关系与部署见[项目架构文档](architecture.md)。旧代码修复 Agent 的记忆和 Token 预算不是本链路的运行机制。**每次修改复盘方案或实现时，同步修订相关章节，并在文末追加变更记录。**
 
 ## 1. 证据从哪里来
 
@@ -26,11 +26,11 @@
 
 | 依据 ID | 当前可核对的判断 | 一手依据 | 验证范围 |
 | --- | --- | --- | --- |
-| `CTX-01` | PR、CI、飞书及手工材料按来源生成 Evidence | [`GitHubConnector.collect`、`FeishuConnector.collect`](../backend/src/repo_maintainer/retrospective_connectors.py) | 连接器单元测试和模拟响应；真实权限与缺失数据仍需联调。 |
+| `CTX-01` | PR、CI、飞书及手工材料按来源生成 Evidence | [`GitHubConnector.collect`、`FeishuConnector.collect`](../backend/src/repo_maintainer/retrospective_connectors.py) | 单元/模拟验证；2026-10-21 另验证真实私有 PR/diff/源码及六条重建消息。该次未自动采集旧失败 CI 归档，具体权限与缺口见[执行记录](real-walkthrough-2026-10-21.md)。 |
 | `CTX-02` | 未出现在 diff 的相关源码可通过静态关系进入候选；多 diff 文件可扩展候选上限，同文件多个远离的改动区域可分别取证；唯一目标文件的调用/导入边可提供两跳候选 | [`RepositoryCodeContext.collect`](../backend/src/repo_maintainer/retrospective_code_context.py)、[`test_multiple_diff_files_expand_beyond_base_limit_and_keep_caller`](../backend/tests/test_retrospective_pipeline.py)、[`test_separate_diff_hunks_in_one_file_produce_separate_code_evidence`](../backend/tests/test_retrospective_pipeline.py)、[`test_two_hop_graph_finds_unchanged_entry_point`](../backend/tests/test_retrospective_pipeline.py) | 验证特定 Python 调用方、多文件/多 hunk 与两跳入口情形；不覆盖动态调用或所有语言。 |
-| `CTX-03` | 原文入库，筛选出的片段受字符预算约束；不同改动文件优先各得一个源码片段 | [`ContextSelector`](../backend/src/repo_maintainer/retrospective_pipeline.py)、[`add_evidence`](../backend/src/repo_maintainer/retrospective_store.py)、[`test_context_selection_covers_distinct_changed_code_files`](../backend/tests/test_retrospective_pipeline.py) | 验证选择器与存储语义；预算不足时仍可能遗漏部分文件，且未保存完整模型请求。 |
+| `CTX-03` | 原文入库，筛选出的片段受字符预算约束；不同改动文件优先各得一个源码片段 | [`ContextSelector`](../backend/src/repo_maintainer/retrospective_pipeline.py)、[`add_evidence`](../backend/src/repo_maintainer/retrospective_store.py)、[`test_context_selection_covers_distinct_changed_code_files`](../backend/tests/test_retrospective_pipeline.py) | 验证选择器与存储语义；预算不足时仍可能遗漏文件；新请求已加快照，旧请求与自动重放仍有缺口。 |
 | `CTX-04` | 核心字段引文按 Evidence ID 和原文字符串校验 | [`QualityValidator`](../backend/src/repo_maintainer/retrospective_pipeline.py)、[`test_quality_validator_rejects_unknown_or_fabricated_citations`](../backend/tests/test_retrospective_pipeline.py) | 验证存在性与字符串匹配；不验证因果支持度。 |
-| `CTX-05` | 历史案例经发布后入库并用于后续召回 | [`RetrospectivePipeline`](../backend/src/repo_maintainer/retrospective_pipeline.py)、[`test_complete_review_publish_and_retrieval_loop`](../backend/tests/test_retrospective_pipeline.py) | 验证模拟闭环；不等于线上召回质量。 |
+| `CTX-05` | 历史案例经发布后入库并用于后续召回 | [`RetrospectivePipeline`](../backend/src/repo_maintainer/retrospective_pipeline.py)、[`test_complete_review_publish_and_retrieval_loop`](../backend/tests/test_retrospective_pipeline.py) | 模拟闭环及 2026-10-21 单条重建案例的真实 Wiki、pgvector 入库、召回和仓库排除验证；包含人工运维恢复，不代表全自动成功率或线上召回质量。 |
 
 ### 单个问题的来源记录模板
 
@@ -56,7 +56,11 @@
 | 生成输入 | 传入筛选后的 Evidence ID、来源、位置、正文、SHA 和选择原因；问题描述最多 2,000 字符；历史案例默认 5 条，`RAG_TOP_K` 最大 20，每条正文最多 1,500 字符 | 不把完整问题日志再次作为 `incident` 字段传入；日志经 Evidence 选择进入模型。模型实际输入还包含 JSON 字段和工具 Schema，**未实现整体精确 Token 预估或硬限额**。 |
 | 驳回后重新生成 | 从库中读取原始内容，对先前选中的证据再次执行选择器 | 保持本次生成的字符预算；若选择器代码或配置变化，重新生成时看到的片段可能改变。 |
 
-选择、裁剪与检索查询见 [`retrospective_pipeline.py`](../backend/src/repo_maintainer/retrospective_pipeline.py)；模型输入见 [`OpenAIReviewGenerator.generate()`](../backend/src/repo_maintainer/retrospective_connectors.py)。代码归档大小、基础和扩展文件数可通过 `CODE_CONTEXT_MAX_ARCHIVE_BYTES`、`CODE_CONTEXT_MAX_FILES`、`CODE_CONTEXT_MAX_EXPANDED_FILES` 调整，`CODE_CONTEXT_ENABLED=0` 可关闭扩展。
+选择、裁剪与检索查询见 [`retrospective_pipeline.py`](../backend/src/repo_maintainer/retrospective_pipeline.py)；模型输入见 [`OpenAIReviewGenerator.generate()`](../backend/src/repo_maintainer/retrospective_connectors.py)。轻量补证已接入：Python 方法索引优先解析本地方法、导入别名和直接父类，按调用和后台任务引用补充两跳（至多 24 个种子/邻居），方法起点进入片段候选；同名歧义不在新符号索引中强连，原启发式候选仍保留。`.insight/context.json` 仅提供同仓库服务路径、显式依赖与文档导航，最多 20 服务、4 个文档候选；依赖的影响状态固定为 unverified。`CODE_CONTEXT_PLANNER_ENABLED` 默认 0；显式启用且有未解析方法线索时，最多一次小型规划（最多 8 段各 1,000 字符，15 秒/700 输出 Token，禁用传输重试），返回最多 6 个唯一已有符号/4 个问题，继续受文件/区域预算约束。规划失败保留静态原文。尚未抓取其他仓库或生产运行拓扑。
+
+源码 `region_complete` 表示选区是否完整对应 AST 区域，选择器再次裁剪会将其置 false，原文不变；不保证该片段已覆盖完整恢复链。发现摘要记录方法线索、文件/区域数、规划状态和未解析调用，属于静态候选元数据。
+
+代码归档大小、基础和扩展文件数可通过 `CODE_CONTEXT_MAX_ARCHIVE_BYTES`、`CODE_CONTEXT_MAX_FILES`、`CODE_CONTEXT_MAX_EXPANDED_FILES` 调整，`CODE_CONTEXT_ENABLED=0` 可关闭扩展。
 
 ## 3. 客观事实如何保留与校验
 
@@ -66,27 +70,35 @@
 4. **引用硬校验。** 影响、根因、修复方案各需引用 Evidence ID。AI 生成和驳回后重新生成时，引文须同时出现在**本次模型看到的片段**与**入库原文**中；人工编辑时校验入库原文。缺 ID、引文不匹配或核心字段无引用时不能进入下一步；模型提示在证据不足时写未知。见 [`QualityValidator`](../backend/src/repo_maintainer/retrospective_pipeline.py) 和 [`OpenAIReviewGenerator`](../backend/src/repo_maintainer/retrospective_connectors.py)。
 5. **人工审核。** AI 结果进入待审核状态；人工可编辑、驳回、通过，审核通过并发布后才把复盘分块加入历史知识库。引用字符串匹配只校验可定位性，**不能自动校验结论是否由引文充分支持**，因果判断仍需审核人核对。
 
+生成与驳回后重新生成的第二轮请求会附带前轮 `QualityValidator.hard_errors`，作为 `previous_validation_errors` 输入；通过临时问题副本传递，不写为 Evidence 或事故 metadata。生成器提示使用短单行原文并保留 diff 的 +/- 标记，原有双层匹配规则保持。每次逻辑请求现在在调用前持久化到 generation_contexts（含反馈、裁剪后的实际输入、工具 Schema、模型与选项和内容哈希），失败响应与被拦截草稿仍未保存，不能宣称自动重放全部运行结果。
+
+生成模式可通过 `OPENAI_ENABLE_THINKING` 选择：默认空值不发送提供商扩展，0/1 仅向兼容服务传 `enable_thinking`。本机百炼演练在一次生成连接断开后设为 0；该设置不改变证据、预算或校验门槛，不构成生成质量提高的证明。
+
 ### 当前未解决的可追溯性问题
 
-- 数据库保存原文与“是否选中”，但**没有单独持久化每次模型实际看到的裁剪片段、完整请求或其哈希**；只靠 Evidence ID 不能精确重放旧生成，尤其在选择器改版后。
+- 新请求已在调用前保存独立快照和哈希：内置生成器 scope 为 provider_request，自定义生成器为 generator_arguments；可选规划单独登记。仅数据库内查询，无新增 HTTP/API 返回。旧版本无快照，不能事后复原；快照不等于完整 HTTP 传输、服务端内部提示词或自动因果验证。
 - 当前总预算按字符而非模型 Token 计量；历史案例、问题字段、JSON 包装及工具 Schema 没有统一的请求级硬限额。
 - 代码扩展是静态启发式，Python AST 与 JS/TS 解析能力不同；同名函数、动态分派、反射及跨服务调用可能产生误连或遗漏。归档超限或下载失败时会跳过代码扩展。
 - GitHub 的大文件或二进制变更可能没有 `patch`；CI 日志取证目前只针对关联 SHA 的一个失败 run，可能缺少最初复现时的运行记录。
 - `QualityValidator` 检查引文存在与字段覆盖，不检查“引文是否真的支持该因果结论”；尚无基于真实历史问题的成功率或审核通过率测量。
 - [`map_reduce_summary.py`](../backend/src/repo_maintainer/map_reduce_summary.py) 是独立的长文本摘要模块，**未接入本复盘主链路**。不得将其写为当前已运行的压缩步骤。
 
-### 可评估的下一步增强（均未实现）
+### 已实现边界与可评估的下一步增强
+
+2026-10-23 的[实施记录](incident-context-discovery-design.md)区分已实现的轻量子集与后续完整方案；当前没有多 Agent、跨仓库获取、部署版本解析或完整工具循环，人工审核和引用门槛保持。生成快照仅存数据库，不新增网络读取入口。
 
 | 候选方法 | 客观事实保留方式 | 上线前验证 |
 | --- | --- | --- |
 | 证据感知压缩 | 从原文提取时间、错误、组件、版本、前后行为等事实项；每项保留 Evidence ID、原文短引、SHA/行号或消息时间，摘要只做导航，不作为独立证据。冲突陈述并列保留。 | 比较压缩前后关键事实和引文的保留率，并检查是否引入原文没有的事实。 |
-| 完整输入快照 | 持久化每次生成实际发送的片段、历史案例 ID、选择器/提示词版本、预算和内容哈希；敏感内容沿用现有数据访问控制。 | 同一版本能重放输入；任何片段变化都能在哈希或版本记录中发现。 |
+| 快照的进一步完善 | 已存逻辑请求与哈希；待补失败响应、选择器/预算版本、真实 Token 计量与自动重放工具。 | 比较输入与结果的可回放性；旧输入不可回填。 |
 | 真实 Token 预算与分层召回 | 按实际模型计量输入，给故障日志、变更代码、未修改关联代码和协作记录分配可调整预算；覆盖不足时按错误栈和符号逐轮扩展。 | 在真实案例集上测量根因相关源码召回率、无关片段比例、超限率和成本。 |
 | 结论支持度检查 | 对每条根因及影响结论建立“结论 → 直接观察 → 静态推断/人的陈述”的支持关系；无法证明的部分明确写“待验证”。 | 人工盲审无依据结论比例、误判率和审核通过率，比较改动前后。 |
 
 只有在实现、测试和真实案例验证后，才能把这些方法移到“已实现”部分，并在下方追加变更记录。
 
 ## 4. 结构化复盘如何进入 RAG 知识库
+
+**向量请求批量边界。** 查询、选中 Evidence 和发布知识均通过 `OpenAIEmbedder` 发出请求，每批最多 20 条，顺序执行并按批内返回 index 恢复输入顺序。缺失、重复或越界 index 会报错，避免文本与向量静默错配；空输入不发请求。该上限来自 2026-10-21 百炼真实联调的 400 响应；它不改变原文、上下文预算或存储维度，也不代表所有服务商的单段长度限制均已适配。
 
 **入库门槛。** `RetrospectiveDocument` 的完整结构化版本保存在 `retrospective_versions.document`（JSONB）。AI 草稿先经引用校验和人工审核；只有审核通过且发布到飞书 Wiki 的版本，才由 [`RetrospectivePipeline.publish()`](../backend/src/repo_maintainer/retrospective_pipeline.py) 建立知识条目。发布 URL、版本 ID、仓库和问题类型分别用于回查、版本定位和检索过滤。未审核的草稿不进入历史知识库。
 
@@ -105,7 +117,9 @@
 
 **失败恢复。** Wiki 发布成功但向量生成或知识索引失败时，重试会复用已保存的发布记录，补做知识索引后才标记为已发布；同一版本重建索引会替换旧片段，避免重复案例。对应流程和模拟测试见 [`test_publish_retry_indexes_saved_publication_after_index_failure`](../backend/tests/test_retrospective_pipeline.py) 和 [`test_knowledge_search_returns_distinct_cases_with_structured_card`](../backend/tests/test_retrospective_pipeline.py)。
 
-**当前限制与后续验证。** PostgreSQL 的 `simple` 全文配置对中文词语的切分能力有限，中文召回更依赖向量部分；RRF 和规则精排参数尚未用真实案例调优。当前 SQL 会对过滤后的片段计算排名，知识库增长后需检查执行计划和延迟，再考虑专用全文索引、ANN 向量索引及更强的精排模型。改变 embedding 模型或片段格式后，已有知识条目需要专门重建；本次未自动回填旧版条目。PostgreSQL 查询尚未在真实数据库联调。应以真实问题集测量按案例的 Recall@5/20、MRR 或 nDCG、根因可用率、引用可回查率、审核通过率和检索延迟，并对照只用全文、只用向量及混合检索消融，再决定是否扩大候选池、调整精排权重或引入 cross-encoder。pgvector 官方将全文检索与向量检索，以及 RRF 或 cross-encoder 合并，列为[混合检索方式](https://github.com/pgvector/pgvector#hybrid-search)。
+真实演练还观察到发布记录保存之前的失败：节点已创建、正文因 docx 权限被拒绝，本地没有 publication。该窗口不受上述恢复分支保护，直接重试可能重复建页；本次需人工续写并回读既有节点后登记 publication，不能宣称自动恢复已实现。另一次生成由诊断脚本复用 30 段已索引证据，调用真实模型并重新通过原双层校验后恢复待审核，UI 再编辑审核；其运维介入、模型用量及重复取证范围见[执行记录](real-walkthrough-2026-10-21.md)。
+
+**当前限制与后续验证。** PostgreSQL 的 `simple` 全文配置对中文词语的切分能力有限，中文召回更依赖向量部分；RRF 和规则精排参数尚未用真实案例调优。当前 SQL 会对过滤后的片段计算排名，知识库增长后需检查执行计划和延迟，再考虑专用全文索引、ANN 向量索引及更强的精排模型。改变 embedding 模型或片段格式后，已有知识条目需要专门重建；本次未自动回填旧版条目。2026-10-21 已在真实 PostgreSQL/pgvector 上完成单条重建案例的发布入库、混合召回和仓库排除验证，尚非真实事故集的质量或性能评估。应以真实问题集测量按案例的 Recall@5/20、MRR 或 nDCG、根因可用率、引用可回查率、审核通过率和检索延迟，并对照只用全文、只用向量及混合检索消融，再决定是否扩大候选池、调整精排权重或引入 cross-encoder。pgvector 官方将全文检索与向量检索，以及 RRF 或 cross-encoder 合并，列为[混合检索方式](https://github.com/pgvector/pgvector#hybrid-search)。
 
 ## 5. 方案变更登记规则
 
@@ -124,4 +138,10 @@
 | 2026-09-27 | 将结构化复盘的历史索引改为四类带来源追溯的片段；按案例去重返回主卡片，并补齐 Wiki 已发布但知识索引失败后的重试。 | 对照 `RetrospectivePipeline.publish`、`_knowledge_chunks`、`PostgresRetrospectiveStore` 和模拟端到端测试；本机相关测试 17 项通过。 | PostgreSQL 查询尚未在真实数据库联调；旧三片段条目需重建，中文混合检索权重和真实案例召回率未验证。 |
 | 2026-09-28 | 将历史案例切片细分为五类，对长字段分段；全文和向量两路召回各自先按案例选最佳片段，再以 RRF 融合，之后加入模块、关键词、标题的可解释精排，避免长案例占满候选池，也避免主卡前 4,000 字之外的内容失去独立召回机会。长查询的全文词项改用 OR 连接，并让模型接收配置的最终案例数。 | 修改 `_knowledge_chunks`、`_split_knowledge_section`、两种存储实现的 `search_knowledge`、`_rerank_knowledge_hits`、模型输入和环境配置；新增长字段、双路召回、候选池公平性与精排测试，本机相关测试 21 项通过。[PostgreSQL 文档](https://www.postgresql.org/docs/16/textsearch-controls.html)说明 `plainto_tsquery` 默认以 AND 连接词项；混合检索组合方式参见 [pgvector 官方文档](https://github.com/pgvector/pgvector#hybrid-search)。 | 参数是初始值，缺少真实复盘案例的排序评估；PostgreSQL SQL 未联调，旧版片段需重建；中文全文切词及知识库增长后的延迟仍待验证。 |
 | 2026-10-01 | 新增全项目架构总览与持续升级约定；台账加入架构入口，并将生成输入表中的历史案例数量与 2026-09-28 实现对齐 | 对照 API、Pipeline、运行配置、生成器、SQL、前端路由和 Compose；核对文档本地链接；业务实现未变化 | 本次为静态文档核对，未重跑数据库/真实平台联调；Compose 尚未转发的四项检索/源码配置已登记在架构文档 |
-
+| 2026-10-21 | 向量适配器每批最多 20 条，校验返回 index，修复真实百炼拒绝 31 条输入的问题 | `test_embedding_batches.py` 的 3 项回归及原复盘 21 项测试通过；真实失败保留在本机隔离演练任务中，随后重试 | 不改变 Evidence 来源和引用规则；尚无所有兼容模型的长度/限流验证；无需数据迁移 |
+| 2026-10-21 | 保留引文硬校验，给生成与驳回重生的第二轮传递具体校验错误，提示逐行保留 diff 标记 | 真实任务因 `Quote not found` 失败；新增测试覆盖两个入口的反馈、有效结果保存及不污染事故 metadata，复盘 22 项和向量 3 项测试通过 | 中间失败草稿和完整模型请求仍未保存；反馈只改善可定位性，不验证因果真实性；[演练记录](real-walkthrough-2026-10-21.md) |
+| 2026-10-21 | 增加可选 `OPENAI_ENABLE_THINKING`，便于为兼容提供商明确生成模式；演练设为 0 后重试 | 百炼小型非思考 Function Calling 请求 1.34 秒返回；27 项相关测试覆盖原流程、分批、配置与校验反馈 | 单个探针不等于完整复盘成功；没有生成质量/延迟消融；默认空值保持提供商原行为 |
+| 2026-10-21 | 登记重建材料的来源边界、真实模型人工恢复和 Wiki 部分失败 | 30 段证据的 1024 维向量实存；真实模型 13,016 输入/1,185 输出 Token 的输出通过双层引文校验；UI 保存人工 v2 并审核；Wiki 节点已建、正文权限 99991672 | 当前历史知识为 0，正文发布及召回待完成；不是全自动 UI 闭环；引用匹配满分仍有过度影响推断，须人工审核 |
+| 2026-10-21 | 用户发布文档权限后完成既有节点续写、知识入库与单案例检索，更新真实验证范围 | Wiki 正文 3,334 字符回读核对，浏览器实见首页下文档；最终 published v2，1 案例/5 知识片段均 1024 维；同仓库查询命中、错误仓库过滤 0；累计 59 证据向量，最终生成用 30 段，详见[执行记录](real-walkthrough-2026-10-21.md) | 生成与部分发布包含人工恢复；旧重复来源/向量未清理；单条重建案例不等于真实问题集效果；普通文本排版与原事故未证实内容仍有边界 |
+| 2026-10-23 | 新增[事故相关代码发现设计](incident-context-discovery-design.md)，将一次性源码扩展的后续方向细化为按问题补证，明确跨服务定位、证据分类与预算 | 对照当前源码采集、索引、选择器、模型与连接器；依据 Codex/Claude Code/Pi 官方文档和 Pi 公开源码；本次仅文档静态核对及本地链接检查，未运行新测试或线上验证 | 所有新工具、服务/部署映射、探索循环、ContextPack 与参数档位均未实现；无表、配置或部署迁移；原有字符预算和输入快照缺口保留 |
+| 2026-10-23 | 实施轻量 Python 方法发现、显式同仓库服务文档、默认关闭的一次规划和生成输入快照；转发四项既有配置 | 针对性回归与隔离 PostgreSQL 幂等建表/快照读写验证；快照在调用前写入，包含失败请求与反馈，原始 Evidence 不覆盖；详见[实施设计](incident-context-discovery-design.md) | 无新增 HTTP 快照入口，现有部署需先 migrate；字符预算不等于 Token 硬限额，跨仓库、双版本、动态分派与生产运行证据仍未接入；未改线上或原演练环境 |

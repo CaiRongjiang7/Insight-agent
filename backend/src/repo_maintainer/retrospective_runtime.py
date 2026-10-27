@@ -15,7 +15,7 @@ from .retrospective_connectors import (
 )
 from .retrospective_pipeline import ContextSelector, RetrospectivePipeline
 from .retrospective_code_context import GitHubArchiveSource, RepositoryCodeContext
-from .retrospective_store import PostgresRetrospectiveStore
+from .retrospective_store import PostgresRetrospectiveStore, record_generation_context
 
 
 class TaskQueue(Protocol):
@@ -76,6 +76,13 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
         wiki_space_id=feishu_space_id,
         wiki_parent_node_token=feishu_parent,
     )
+    generator = OpenAIReviewGenerator(
+        api_key=openai_api_key, model=openai_model, base_url=base_url,
+        timeout=float(os.getenv('OPENAI_TIMEOUT_SECONDS', '60')),
+        enable_thinking=_optional_bool_env('OPENAI_ENABLE_THINKING'),
+    )
+    generator.discovery_recorder = lambda incident, request: record_generation_context(
+        store, incident, 'code_discovery', request, scope='provider_request')
     code_context = None
     if os.getenv("CODE_CONTEXT_ENABLED", "1").strip().lower() not in {"0", "false", "no"}:
         code_context = RepositoryCodeContext(
@@ -86,18 +93,15 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
             ),
             max_files=int(os.getenv("CODE_CONTEXT_MAX_FILES", "10")),
             max_expanded_files=int(os.getenv("CODE_CONTEXT_MAX_EXPANDED_FILES", "40")),
+            planner=(generator.plan_code_context
+                     if _optional_bool_env('CODE_CONTEXT_PLANNER_ENABLED') is True else None),
         )
     return RetrospectivePipeline(
         store=store,
         git=GitHubConnector(github_token, api_url=os.getenv("GITHUB_API_URL", "https://api.github.com")),
         code_context=code_context,
         collaboration=collaboration,
-        generator=OpenAIReviewGenerator(
-            api_key=openai_api_key,
-            model=openai_model,
-            base_url=base_url,
-            timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "60")),
-        ),
+        generator=generator,
         embedder=OpenAIEmbedder(
             api_key=openai_api_key,
             model=embedding_model,
@@ -138,6 +142,17 @@ def configure_app_pipeline(app) -> None:
         app.state.retrospective_queue = create_task_queue_from_env(pipeline)
     except Exception as exc:  # fail readiness without breaking legacy demo endpoints
         app.state.retrospective_error = str(exc)
+
+
+def _optional_bool_env(name: str) -> bool | None:
+    value = os.getenv(name, "").strip().lower()
+    if not value:
+        return None
+    if value in {"1", "true", "yes"}:
+        return True
+    if value in {"0", "false", "no"}:
+        return False
+    raise ValueError(f"{name} must be blank, true or false")
 
 
 def _required(name: str) -> str:

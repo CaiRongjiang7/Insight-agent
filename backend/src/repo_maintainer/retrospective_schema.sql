@@ -80,6 +80,15 @@ CREATE TABLE IF NOT EXISTS retrospective_versions (
     UNIQUE (incident_id, version)
 );
 
+CREATE TABLE IF NOT EXISTS generation_contexts (
+    id TEXT PRIMARY KEY,
+    incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+    payload JSONB NOT NULL,
+    content_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS generation_contexts_incident_idx ON generation_contexts(incident_id, created_at);
+
 CREATE TABLE IF NOT EXISTS review_actions (
     id TEXT PRIMARY KEY,
     incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,

@@ -143,6 +143,36 @@ def make_pipeline(store=None, collaboration=None, git=None, code_context=None, g
 
 
 class RetrospectivePipelineTests(unittest.TestCase):
+    def test_generation_and_regeneration_retry_with_citation_validation_feedback(self):
+        class FeedbackGenerator(FakeGenerator):
+            def __init__(self):
+                self.feedback = []
+
+            def generate(self, incident, evidence, history):
+                errors = incident.metadata.get("generation_validation_errors", [])
+                self.feedback.append(list(errors))
+                document, metadata = super().generate(incident, evidence, history)
+                if not errors:
+                    document.root_cause.citations[0].quote = "fabricated quotation"
+                return document, metadata
+
+        generator = FeedbackGenerator()
+        pipeline = make_pipeline(generator=generator)
+        incident = pipeline.create_incident(IncidentCreate(title="upload failure"))
+        first = pipeline.run(incident.id)
+        self.assertEqual(first.version, 1)
+        self.assertEqual(pipeline.store.get_incident(incident.id).status, IncidentStatus.PENDING_REVIEW)
+        self.assertEqual(generator.feedback[0], [])
+        self.assertTrue(any("Quote not found" in error for error in generator.feedback[1]))
+        self.assertNotIn("generation_validation_errors", pipeline.store.get_incident(incident.id).metadata)
+
+        pipeline.reject(incident.id, "reviewer", "regenerate for verification")
+        second = pipeline.regenerate(incident.id)
+        self.assertEqual(second.version, 2)
+        self.assertEqual(generator.feedback[2], [])
+        self.assertTrue(any("Quote not found" in error for error in generator.feedback[3]))
+        self.assertEqual(len(pipeline.store.list_versions(incident.id)), 2)
+
     def test_error_stack_selects_source_outside_diff(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

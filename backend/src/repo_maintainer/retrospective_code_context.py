@@ -17,7 +17,7 @@ import zipfile
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import ContextManager, Iterator, Protocol
+from typing import Callable, ContextManager, Iterator, Protocol
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -25,6 +25,7 @@ from .error_semantics import ErrorSemanticCompressor
 from .models import IncidentReport
 from .repo_indexer import RepositoryIndexer
 from .retrospective_models import Evidence, EvidenceSource, IncidentRecord
+from .retrospective_discovery import CodeDiscoveryPlan, PythonSymbolIndex, service_map_context
 
 
 class RepositoryContextError(RuntimeError):
@@ -117,6 +118,7 @@ class RepositoryCodeContext:
         max_expanded_files: int = 40,
         max_regions_per_file: int = 2,
         max_snippet_chars: int = 2_400,
+        planner: Callable[[IncidentRecord, list[Evidence]], CodeDiscoveryPlan] | None = None,
     ) -> None:
         self.source = source
         self.indexer = indexer or RepositoryIndexer()
@@ -124,6 +126,7 @@ class RepositoryCodeContext:
         self.max_expanded_files = max(self.max_files, max_expanded_files)
         self.max_regions_per_file = max(1, max_regions_per_file)
         self.max_snippet_chars = max(300, max_snippet_chars)
+        self.planner = planner
 
     def collect(self, incident: IncidentRecord, evidence: list[Evidence]) -> list[Evidence]:
         with self.source.open(incident) as root:
@@ -257,6 +260,25 @@ class RepositoryCodeContext:
                     if not focus_names[path]:
                         focus_names[path].update(compressed.keywords[:5])
 
+            symbols = PythonSymbolIndex(root, files)
+            seeds = [symbol for path in sorted(set(changed_lines) | set(stack_lines))
+                     for symbol in symbols.at(path, changed_lines[path] | stack_lines[path])]
+            chain = symbols.expand(seeds)
+            for symbol in chain:
+                add(symbol.path, 80, "symbol_behavior_chain", symbol.name)
+            document_paths, service_map = service_map_context(root, files, set(changed_lines) | set(stack_lines))
+            for path in document_paths:
+                add(path, 55, "service_map_document")
+                stack_lines[path].add(1)
+
+            report_summary = {
+                "strategy": "symbol-first-v1", "static_hops": 2,
+                "planner": "not_needed" if self.planner else "disabled", "service_map": service_map,
+                "questions": [], "unresolved_calls": sorted({call for seed in seeds for call in seed.calls
+                    if "." in call and not call.startswith('self.logger.') and symbols.resolve(seed, call) is None})[:12],
+                'followup_symbols': [],
+            }
+
             revision = str(incident.metadata.get("head_sha") or incident.commit_sha)
             output: list[Evidence] = []
             ordered = sorted(scores, key=lambda item: (-scores[item], item))
@@ -268,13 +290,16 @@ class RepositoryCodeContext:
             chosen = changed_candidates[:changed_quota] + related_candidates[: file_limit - changed_quota]
             if len(chosen) < file_limit:
                 chosen.extend(changed_candidates[changed_quota : changed_quota + file_limit - len(chosen)])
+            if self.planner is not None and report_summary['unresolved_calls']:
+                chosen = chosen[:max(len(changed_candidates), file_limit - 2, 1)]
             for path in chosen:
                 text = _read_source(root / path)
                 if not text.strip():
                     continue
                 anchors = changed_lines.get(path, set()) | stack_lines.get(path, set())
                 regions: list[tuple[int, int, str, int]] = []
-                for anchor in sorted(anchors):
+                symbol_anchors = [symbol.first for symbol in chain if symbol.path == path]
+                for anchor in [*sorted(anchors), *symbol_anchors]:
                     if any(first <= anchor <= last for first, last, _, _ in regions):
                         continue
                     region = _select_region(text, {anchor}, focus_names[path], self.max_snippet_chars)
@@ -299,10 +324,58 @@ class RepositoryCodeContext:
                             source_url=(f"https://github.com/{incident.repo_name}/blob/{revision}/{quote(path)}#L{first}-L{last}" if incident.repo_name and revision else ""),
                             repo_id=incident.repo_id,
                             commit_sha=revision,
-                            metadata={"file_path": path, "line_start": first, "line_end": last, "anchor_line": anchor, "relation": relation, "retrieval_score": scores[path], "analysis": "static_candidate"},
+                            metadata={"file_path": path, "line_start": first, "line_end": last, "anchor_line": anchor, "relation": relation, "retrieval_score": scores[path], "analysis": "static_candidate",
+                                      "region_complete": any(a == first and b == last for a, b, _ in _python_regions(text))},
                             selection_reason=", ".join(relation),
                         )
                     )
+
+            # One small planning call only when static discovery leaves an unresolved
+            # method reference. The planner can name symbols, not execute commands.
+            if self.planner is not None and seeds and report_summary['unresolved_calls']:
+                try:
+                    plan = self.planner(incident, output)
+                    if not isinstance(plan, CodeDiscoveryPlan):
+                        raise ValueError('Invalid discovery plan')
+                    report_summary['planner'] = 'completed'
+                    report_summary['questions'] = [q[:200] for q in plan.questions]
+                    by_path: dict[str, int] = defaultdict(int)
+                    for item in output:
+                        by_path[item.metadata['file_path']] += 1
+                    for reference in plan.symbols:
+                        for symbol in symbols.lookup(reference):
+                            if len(by_path) >= file_limit and symbol.path not in by_path:
+                                continue
+                            if by_path[symbol.path] >= self.max_regions_per_file:
+                                continue
+                            if any(item.metadata['file_path'] == symbol.path
+                                   and item.metadata['line_start'] <= symbol.first <= item.metadata['line_end'] for item in output):
+                                continue
+                            region = _select_region(_read_source(root / symbol.path), {symbol.first}, {symbol.name}, self.max_snippet_chars)
+                            if region is None:
+                                continue
+                            first, last, content = region
+                            digest = hashlib.sha1(f'{incident.id}:{revision}:{symbol.path}:{first}:{last}'.encode()).hexdigest()[:20]
+                            output.append(Evidence(
+                                id=f'ev_code_{digest}', incident_id=incident.id, source_type=EvidenceSource.REPOSITORY_CODE,
+                                content=content, location=f'{symbol.path}#L{first}-L{last}', repo_id=incident.repo_id,
+                                commit_sha=revision,
+                                source_url=f'https://github.com/{incident.repo_name}/blob/{revision}/{quote(symbol.path)}#L{first}-L{last}',
+                                metadata={'file_path': symbol.path, 'line_start': first, 'line_end': last, 'anchor_line': symbol.first,
+                                          'relation': ['bounded_symbol_followup'], 'retrieval_score': 85, 'analysis': 'static_candidate',
+                                          'region_complete': first == symbol.first and last == symbol.last},
+                                selection_reason='bounded_symbol_followup',
+                            ))
+                            by_path[symbol.path] += 1
+                            report_summary['followup_symbols'].append(symbol.key)
+                except Exception as exc:
+                    # Optional planning must never discard deterministic evidence.
+                    report_summary['planner'] = f'unavailable:{type(exc).__name__}'
+            report_summary['files'] = len({item.metadata['file_path'] for item in output})
+            report_summary['regions'] = len(output)
+            report_summary['incomplete_regions'] = sum(not item.metadata['region_complete'] for item in output)
+            for item in output:
+                item.metadata['context_discovery'] = report_summary
             return output
 
 

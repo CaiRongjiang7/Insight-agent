@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
 from copy import deepcopy
 from pathlib import Path
 from threading import RLock
@@ -10,6 +12,7 @@ from typing import Any, Protocol
 
 from .retrospective_models import (
     Evidence,
+    GenerationContext,
     IncidentRecord,
     IncidentStatus,
     KnowledgeHit,
@@ -19,6 +22,13 @@ from .retrospective_models import (
     new_id,
     utc_now,
 )
+
+
+def record_generation_context(store, incident: IncidentRecord, purpose: str, request: dict, **details) -> None:
+    payload = {'format_version': 1, 'purpose': purpose, 'target_version': incident.current_version + 1,
+               'request': request, **details}
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+    store.save_generation_context(GenerationContext(incident_id=incident.id, payload=payload, content_hash=digest))
 
 
 class RetrospectiveStore(Protocol):
@@ -32,6 +42,8 @@ class RetrospectiveStore(Protocol):
     def add_evidence(self, evidence: list[Evidence]) -> list[Evidence]: ...
     def index_evidence(self, evidence: list[Evidence], embeddings: list[list[float]]) -> None: ...
     def list_evidence(self, incident_id: str) -> list[Evidence]: ...
+    def save_generation_context(self, context: GenerationContext) -> None: ...
+    def list_generation_contexts(self, incident_id: str) -> list[GenerationContext]: ...
     def save_version(self, version: RetrospectiveVersion) -> RetrospectiveVersion: ...
     def list_versions(self, incident_id: str) -> list[RetrospectiveVersion]: ...
     def latest_version(self, incident_id: str) -> RetrospectiveVersion | None: ...
@@ -76,6 +88,7 @@ class InMemoryRetrospectiveStore:
         self._knowledge: list[dict[str, Any]] = []
         self._evidence_embeddings: dict[str, list[float]] = {}
         self._jobs: dict[str, dict[str, Any]] = {}
+        self._contexts: dict[str, list[GenerationContext]] = {}
 
     def initialize(self) -> None:
         return None
@@ -161,6 +174,14 @@ class InMemoryRetrospectiveStore:
             versions.append(deepcopy(version))
             self.update_incident(version.incident_id, current_version=version.version)
             return deepcopy(version)
+
+    def save_generation_context(self, context: GenerationContext) -> None:
+        with self._lock:
+            self._contexts.setdefault(context.incident_id, []).append(deepcopy(context))
+
+    def list_generation_contexts(self, incident_id: str) -> list[GenerationContext]:
+        with self._lock:
+            return deepcopy(self._contexts.get(incident_id, []))
 
     def list_versions(self, incident_id: str) -> list[RetrospectiveVersion]:
         with self._lock:
@@ -328,6 +349,19 @@ class PostgresRetrospectiveStore:
 
     def _connect(self):
         return self._psycopg.connect(self.database_url, row_factory=self._dict_row)
+
+    def save_generation_context(self, context: GenerationContext) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                'INSERT INTO generation_contexts (id, incident_id, payload, content_hash, created_at) VALUES (%s,%s,%s,%s,%s)',
+                (context.id, context.incident_id, self._Jsonb(context.payload), context.content_hash, context.created_at),
+            )
+
+    def list_generation_contexts(self, incident_id: str) -> list[GenerationContext]:
+        with self._connect() as connection:
+            rows = connection.execute('SELECT * FROM generation_contexts WHERE incident_id=%s ORDER BY created_at,id',
+                                      (incident_id,)).fetchall()
+        return [GenerationContext.model_validate(_normalize_row(row)) for row in rows]
 
     def initialize(self) -> None:
         sql = self.schema_path.read_text(encoding="utf-8")
