@@ -83,7 +83,7 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
     )
     generator.discovery_recorder = lambda incident, request: record_generation_context(
         store, incident, 'code_discovery', request, scope='provider_request')
-    tools_enabled = _optional_bool_env('REVIEW_TOOLS_ENABLED') is True
+    tools_enabled = _optional_bool_env('REVIEW_TOOLS_ENABLED') is not False
     code_context = None
     if os.getenv("CODE_CONTEXT_ENABLED", "1").strip().lower() not in {"0", "false", "no"}:
         code_context = RepositoryCodeContext(

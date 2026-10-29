@@ -36,9 +36,11 @@
 
 2026-10-27 在 `codex/standard-tools-upgrade` 分支实现标准只读取证 Tools：`get_related_code`、`search_feishu_context`、`search_historical_cases`。通过 JSON Schema / Function Calling 请求、校验执行和 call_id 结果回传形成最多两轮/累计四次执行的补证循环；共享 8,000 字符工具正文预算，最终仍受既有证据预算和原文引用校验。统一缓存避免重复查询/重复正文，模型与工具轨迹存入现有 generation_contexts。方案、契约和测试入口见[标准 Tool 升级方案](docs/standard-tools-upgrade.md)。
 
-`REVIEW_TOOLS_ENABLED=0` 默认保持原路径；设为 1 才启用，且不叠加旧的一次符号规划。代码工具复用同一只读固定 SHA 会话；飞书工具仅检索本次已采集窗口，历史内容仅供类比。无新增 HTTP 快照入口、数据库表或外部依赖。本次 77 项针对性测试（含隔离 PostgreSQL）通过；真实兼容服务的多轮协议与生产部署仍待验证。
+2026-10-29 起 `REVIEW_TOOLS_ENABLED` 默认开启（未配置或留空均启用，设为 `0` 可关闭），且不叠加旧的一次符号规划。代码工具复用同一只读固定 SHA 会话；飞书工具仅检索本次已采集窗口，历史内容仅供类比。无新增 HTTP 快照入口、数据库表或外部依赖。2026-10-27 的 77 项针对性测试（含隔离 PostgreSQL）通过；10-29 默认值调整复跑时 75 项通过、2 项数据库测试跳过。真实兼容服务的多轮协议与生产部署仍待验证。
 
-2026-10-23 已落地轻量代码发现：固定 SHA 上按 Python 方法、导入别名、直接继承和任务入口补齐两跳候选，默认不增加模型调用。可选 `CODE_CONTEXT_PLANNER_ENABLED=1` 仅在存在未解析方法线索时追加一次规划（15 秒、700 输出 Token、最多 6 个唯一符号），失败回退静态结果。文件、区域和字符预算继续生效。方案与限制见[实施设计](docs/incident-context-discovery-design.md)。
+适用业务包括代码缺陷、无 PR 的配置/发布变更、容量与依赖故障、数据问题及模型服务质量退化；当前支持范围、证据要求和公开真实案例见[业务场景回顾](docs/incident-business-scenarios.md)。告警、Nacos、K8s、监控和业务数据源的自动连接器仍未接入。
+
+2026-10-23 已落地轻量代码发现：固定 SHA 上按 Python 方法、导入别名、直接继承和任务入口补齐两跳候选。该静态扩展本身不增加模型调用；当前默认另运行上述工具决策。关闭标准工具后，可选 `CODE_CONTEXT_PLANNER_ENABLED=1` 仅在存在未解析方法线索时追加一次规划（15 秒、700 输出 Token、最多 6 个唯一符号），失败回退静态结果。文件、区域和字符预算继续生效。方案与限制见[实施设计](docs/incident-context-discovery-design.md)。
 
 业务仓库可放置 `.insight/context.json`，按服务路径关联同仓库文档与显式依赖，格式见[示例](backend/examples/incident-context-map.json)；依赖只表示候选，不自动证明业务受影响，也不会自动抓取其他仓库。生成请求在调用模型前保存到新增的 `generation_contexts` 表，包括重试、失败请求和驳回重生；现有 HTTP 接口不返回完整快照。升级现有环境须先用 `docker compose build api` 构建新后端镜像，再运行 `docker compose run --rm migrate`，最后更新 API/Worker 容器；旧输入不能回填复原。默认 Compose 现已转发四项 RAG/扩展文件配置。当前为工作区实现与隔离测试结果，未更新原演练或生产部署。
 

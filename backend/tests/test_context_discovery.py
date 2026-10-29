@@ -192,7 +192,7 @@ class DiscoveryRuntimeTests(unittest.TestCase):
         self.assertFalse(request['store'])
         self.assertEqual(recorder.call_args.args[1], request)
 
-    def test_model_planner_requires_explicit_enable(self):
+    def test_model_planner_requires_explicit_enable_when_tools_disabled(self):
         from repo_maintainer import retrospective_runtime as runtime
         required = ['DATABASE_URL', 'REDIS_URL', 'OPENAI_API_KEY', 'OPENAI_MODEL', 'EMBEDDING_MODEL',
                     'GITHUB_TOKEN', 'GITHUB_WEBHOOK_SECRET', 'FEISHU_APP_ID', 'FEISHU_APP_SECRET',
@@ -200,6 +200,7 @@ class DiscoveryRuntimeTests(unittest.TestCase):
         for setting in ('', '0', '1'):
             env = {k: 'test-only' for k in required}
             env['CODE_CONTEXT_PLANNER_ENABLED'] = setting
+            env['REVIEW_TOOLS_ENABLED'] = '0'
             with self.subTest(setting=setting), patch.dict(os.environ, env, clear=True), \
                  patch.object(runtime, 'PostgresRetrospectiveStore'), patch.object(runtime, 'RedisTokenCache'), \
                  patch.object(runtime, 'FeishuConnector'), patch.object(runtime, 'OpenAIEmbedder'), \

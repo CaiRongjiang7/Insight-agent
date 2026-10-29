@@ -274,7 +274,7 @@ class RetrospectivePipeline:
         max_generation_attempts: int = 2,
         default_feishu_chat_ids: list[str] | None = None,
         default_feishu_doc_tokens: list[str] | None = None,
-        tools_enabled: bool = False,
+        tools_enabled: bool = True,
     ) -> None:
         self.store = store
         self.git = git

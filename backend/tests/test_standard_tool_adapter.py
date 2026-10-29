@@ -49,21 +49,24 @@ class StandardToolAdapterTests(unittest.TestCase):
         self.assertEqual([t['name'] for t in request['tools']], ['submit_retrospective'])
         self.assertEqual(json.loads(request['input'])['incident']['tool_exploration']['stop_reason'], 'round_limit')
 
-    def test_runtime_tools_are_opt_in_and_disable_legacy_planner(self):
+    def test_runtime_tools_default_on_and_disable_legacy_planner(self):
         from repo_maintainer import retrospective_runtime as runtime
         required = ['DATABASE_URL', 'REDIS_URL', 'OPENAI_API_KEY', 'OPENAI_MODEL', 'EMBEDDING_MODEL',
                     'GITHUB_TOKEN', 'GITHUB_WEBHOOK_SECRET', 'FEISHU_APP_ID', 'FEISHU_APP_SECRET',
                     'FEISHU_WIKI_SPACE_ID', 'FEISHU_WIKI_PARENT_NODE_TOKEN']
-        for setting in ('', '0', '1'):
+        for setting in (None, '', '0', 'false', '1', 'true'):
             env = {key: 'test-only' for key in required}
-            env.update(REVIEW_TOOLS_ENABLED=setting, CODE_CONTEXT_PLANNER_ENABLED='1')
+            env['CODE_CONTEXT_PLANNER_ENABLED'] = '1'
+            if setting is not None:
+                env['REVIEW_TOOLS_ENABLED'] = setting
             with self.subTest(setting=setting), patch.dict(os.environ, env, clear=True), \
                  patch.object(runtime, 'PostgresRetrospectiveStore'), patch.object(runtime, 'RedisTokenCache'), \
                  patch.object(runtime, 'FeishuConnector'), patch.object(runtime, 'OpenAIEmbedder'), \
                  patch.object(runtime, 'OpenAIReviewGenerator'):
                 pipeline = runtime.create_pipeline_from_env()
-                self.assertEqual(pipeline.tools_enabled, setting == '1')
-                self.assertEqual(pipeline.code_context.planner is None, setting == '1')
+                enabled = setting not in ('0', 'false')
+                self.assertEqual(pipeline.tools_enabled, enabled)
+                self.assertEqual(pipeline.code_context.planner is None, enabled)
 
 
 class ToolSelectionRegressionTests(unittest.TestCase):

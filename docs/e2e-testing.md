@@ -66,7 +66,7 @@ docker compose -f compose.e2e.yaml down -v
 
 ## 2026-10-27 标准 Tool 升级验收
 
-升级说明见[标准 Tool 方案](standard-tools-upgrade.md)。`REVIEW_TOOLS_ENABLED=0` 默认保留原路径；显式设 1 才启用三个只读取证 Tools，且不叠加 CODE_CONTEXT_PLANNER_ENABLED 的旧规划。模型调用以 Function Calling 回送结果，审批/发布仍由现有流程控制。无新表/依赖/API，旧部署须已有 generation_contexts。
+升级说明见[标准 Tool 方案](standard-tools-upgrade.md)。10-27 初次交付默认关闭；10-29 起默认开启三个只读取证 Tools（未配置/留空启用，显式 0/false 关闭），且不叠加 CODE_CONTEXT_PLANNER_ENABLED 的旧规划。模型调用以 Function Calling 回送结果，审批/发布仍由现有流程控制。无新表/依赖/API，旧部署须已有 generation_contexts。
 
 针对性入口（PYTHONPATH 包含 src/tests）：
 
@@ -77,3 +77,9 @@ python -m unittest test_retrospective_pipeline test_review_model_options test_em
 77 项全部通过，包含两项配置 TEST_CONTEXT_DATABASE_URL 后才执行的独立 PostgreSQL 测试：幂等建表/快照读写，以及完整 Tool 请求/结果/新证据/最终引用入库。数据库无主机端口、无持久卷，模型与外部采集使用 Fake/Mock。未配置测试库时这两项跳过，不等于已验证数据库。
 
 新增测试覆盖单会话/索引复用与关闭、严格 Schema、同名歧义、范围过滤、两轮/四次执行、正文预算/缓存、长文档窗口、截断标记、所有 call_id 配对、reasoning 项回放、初始/最终 selected 分离、规划失败回退与重生复用。Compose 开关转发与文档本地链接另行检查。本次未重跑完整 UI E2E，未真实调用百炼/GitHub/飞书或更新运行环境。
+
+## 2026-10-29 默认开启验收
+
+同一组 77 项测试在断网容器复跑：75 项通过，2 项数据库测试因没有 TEST_CONTEXT_DATABASE_URL 跳过；未重复 10-27 的隔离数据库验收。扩展运行时用例覆盖变量不存在、空字符串、0/false、1/true，以及工具开启时旧规划被禁用；旧规划独立用例显式关闭标准工具。Compose API/Worker 验证缺失/空值默认 1、显式 0/1 原样转发；文档本地链接和 git diff --check 一并核对。
+
+旧部署需构建后端并更新 API/Worker；有显式 0 的 .env 继续覆盖默认。此次本机 .env 没有该项，沿用新的默认值，未写入其他配置；没有构建/替换原运行环境或发起真实模型补证。真实平台多轮兼容与业务效果仍待验证；[业务场景回顾](incident-business-scenarios.md)仅登记适用范围和缺口，不等于新增连接器验收。

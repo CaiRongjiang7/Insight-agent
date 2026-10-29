@@ -1,10 +1,10 @@
 # 智能复盘证据来源与上下文管理台账
 
-> 当前实现基线：2026-10-27（标准只读 Tool、源码会话与轨迹升级；其余行为沿用既有记录）；最近文档核对：2026-10-27（局部代码/隔离数据库验证，原有研究核对保留；真实平台演练沿用 2026-10-21）。本文只描述 `RetrospectivePipeline` 智能复盘主链路；整个项目的组件关系与部署见[项目架构文档](architecture.md)。旧代码修复 Agent 的记忆和 Token 预算不是本链路的运行机制。**每次修改复盘方案或实现时，同步修订相关章节，并在文末追加变更记录。**
+> 当前实现基线：2026-10-29（标准 Tool 默认开启；其余行为沿用既有记录）；最近文档核对：2026-10-29（局部开关/兼容回归与场景证据评审；本次数据库测试跳过，10-27 验证保留；真实平台演练沿用 2026-10-21）。本文只描述 `RetrospectivePipeline` 智能复盘主链路；整个项目的组件关系与部署见[项目架构文档](architecture.md)。旧代码修复 Agent 的记忆和 Token 预算不是本链路的运行机制。**每次修改复盘方案或实现时，同步修订相关章节，并在文末追加变更记录。**
 
 ## 1. 证据从哪里来
 
-一次复盘先收集原始材料，写入 `evidence_documents`，再从中选择进入模型的片段。来源类型由 [`EvidenceSource`](../backend/src/repo_maintainer/retrospective_models.py) 定义；单条 `Evidence` 包含 `id`、`incident_id`、`source_type`、`content`、`location`、`source_url`、`repo_id`、`commit_sha`、`occurred_at`、`metadata`、`selected` 和 `selection_reason`。有字段不等于该来源一定提供了有效值，取决于连接器和外部系统。
+一次复盘先收集原始材料，写入 `evidence_documents`，再从中选择进入模型的片段。来源类型由 [`EvidenceSource`](../backend/src/repo_maintainer/retrospective_models.py) 定义；[业务场景回顾](incident-business-scenarios.md)登记无 PR 配置、容量、依赖、数据和模型服务事故所需材料；只有已接入或人工提供的原文才进入当前证据。单条 `Evidence` 包含 `id`、`incident_id`、`source_type`、`content`、`location`、`source_url`、`repo_id`、`commit_sha`、`occurred_at`、`metadata`、`selected` 和 `selection_reason`。有字段不等于该来源一定提供了有效值，取决于连接器和外部系统。
 
 | 来源类型 | 当前采集方式 | 可追溯定位 | 事实属性与边界 |
 | --- | --- | --- | --- |
@@ -53,11 +53,11 @@
 | Diff 裁剪 | 选中与问题关键词重合的 hunk；无匹配时取前 3 个 hunk | 原始 patch 仍在库；模型可能只看到部分 hunk。后续预算截断时保留首尾。 |
 | 证据预算 | 默认选中证据总内容不超过 24,000 字符；单条配置上限 6,000 字符；CI、diff、源码、飞书消息/文档、PR、commit 来源优先各留一个名额。之后以总预算约一半作为改动源码的优先覆盖额度，尽量让不同改动文件各有一个片段 | 这是**字符预算**，不是精确 Token 预算；单条首尾拼接会增加裁剪标记，总量仍由选择器限制。文件过多或其他证据占用较高时仍可能遗漏。手工来源参与后续统一排序。配置见 `CONTEXT_BUDGET_CHARS`、`CONTEXT_ITEM_MAX_CHARS`。 |
 | 历史检索 | 用标题、前 500 字描述、问题类型、最多 3 条故障行及相关代码路径/符号组成查询，最多约 1,800 字符；按仓库、问题类型过滤，默认 Top 5 | 已发布知识参与检索。历史案例用于启发，不替代当前证据。 |
-| 标准工具补证 | REVIEW_TOOLS_ENABLED 默认 0；get_related_code / search_feishu_context / search_historical_cases，最多两轮决策/四次实际执行；共享 8,000 正文字符，单次 15 秒/700 输出 Token；同参数缓存只回送已返回 ID | 服务端固定事故/SHA/授权素材范围；代码与静态采集共用一次归档/索引；飞书只搜索当前已采集材料，历史仍非当前 Evidence；软期限不强制中断同步上游调用。 |
+| 标准工具补证 | REVIEW_TOOLS_ENABLED 默认开启（未配置/留空启用，0/false 关闭）；get_related_code / search_feishu_context / search_historical_cases，最多两轮决策/四次实际执行；共享 8,000 正文字符，单次 15 秒/700 输出 Token；同参数缓存只回送已返回 ID | 服务端固定事故/SHA/授权素材范围；代码与静态采集共用一次归档/索引；飞书只搜索当前已采集材料，历史仍非当前 Evidence；软期限不强制中断同步上游调用。 |
 | 生成输入 | 传入筛选后的 Evidence ID、来源、位置、正文、SHA 和选择原因；问题描述最多 2,000 字符；历史案例默认 5 条，`RAG_TOP_K` 最大 20，每条正文最多 1,500 字符 | 不把完整问题日志再次作为 `incident` 字段传入；日志经 Evidence 选择进入模型。模型实际输入还包含 JSON 字段和工具 Schema，**未实现整体精确 Token 预估或硬限额**。 |
 | 驳回后重新生成 | 从库中读取原始内容，对先前选中的证据再次执行选择器 | 保持本次生成的字符预算；若选择器代码或配置变化，重新生成时看到的片段可能改变。 |
 
-选择、裁剪与检索查询见 [`retrospective_pipeline.py`](../backend/src/repo_maintainer/retrospective_pipeline.py)；模型输入见 [`OpenAIReviewGenerator.generate()`](../backend/src/repo_maintainer/retrospective_connectors.py)。轻量补证已接入：Python 方法索引优先解析本地方法、导入别名和直接父类，按调用和后台任务引用补充两跳（至多 24 个种子/邻居），方法起点进入片段候选；同名歧义不在新符号索引中强连，原启发式候选仍保留。`.insight/context.json` 仅提供同仓库服务路径、显式依赖与文档导航，最多 20 服务、4 个文档候选；依赖的影响状态固定为 unverified。`CODE_CONTEXT_PLANNER_ENABLED` 默认 0；显式启用且有未解析方法线索时，最多一次小型规划（最多 8 段各 1,000 字符，15 秒/700 输出 Token，禁用传输重试），返回最多 6 个唯一已有符号/4 个问题，继续受文件/区域预算约束。规划失败保留静态原文。尚未抓取其他仓库或生产运行拓扑。
+选择、裁剪与检索查询见 [`retrospective_pipeline.py`](../backend/src/repo_maintainer/retrospective_pipeline.py)；模型输入见 [`OpenAIReviewGenerator.generate()`](../backend/src/repo_maintainer/retrospective_connectors.py)。轻量补证已接入：Python 方法索引优先解析本地方法、导入别名和直接父类，按调用和后台任务引用补充两跳（至多 24 个种子/邻居），方法起点进入片段候选；同名歧义不在新符号索引中强连，原启发式候选仍保留。`.insight/context.json` 仅提供同仓库服务路径、显式依赖与文档导航，最多 20 服务、4 个文档候选；依赖的影响状态固定为 unverified。`CODE_CONTEXT_PLANNER_ENABLED` 默认 0；关闭标准工具后，显式启用且有未解析方法线索时，最多一次小型规划（最多 8 段各 1,000 字符，15 秒/700 输出 Token，禁用传输重试），返回最多 6 个唯一已有符号/4 个问题，继续受文件/区域预算约束。规划失败保留静态原文。尚未抓取其他仓库或生产运行拓扑。
 
 源码 `region_complete` 表示选区是否完整对应 AST 区域，选择器再次裁剪会将其置 false，原文不变；不保证该片段已覆盖完整恢复链。发现摘要记录方法线索、文件/区域数、规划状态和未解析调用，属于静态候选元数据。
 
@@ -164,3 +164,4 @@ generation_contexts 复用现有表，保存 tool_exploration、tool_model_respo
 | 2026-10-27 | 补核 2026 年模型与思考模式差异，纳入稳定/压缩无显著收益的反证，旧研究降为背景 | 核对研究说明所列 2026 年原文、版本、受测模型和实验条件；同步架构与本地链接检查；仅文档修订 | 不把行为变化当作内部注意力机制证明；无本项目消融，不改预算、模型、审核或部署；过度压缩仍可能遗漏证据 |
 | 2026-10-27 | 将论证目标明确为“长上下文仍可能受干扰，因此应控制输入”，避免把通用阈值当作前置条件 | 复核 Classifier 与既有近期研究，更新研究说明、架构及本地链接；仅文档修订 | 控制的必要性不证明某个固定阈值最优；保留原始证据与关键行为链，未改代码、参数或部署 |
 | 2026-10-27 | 沉淀并在新分支实现三个标准只读 Tools、同快照会话、受控调用循环与证据轨迹 | 77 项针对性测试含隔离 PostgreSQL 通过；Mock/SDK 对象验证两轮回送、输入验证、预算/缓存、空/错/歧义、截断窗口、最终 selected、历史隔离及失败/重生兼容；[方案](standard-tools-upgrade.md) | 默认关闭，无新 HTTP/表/依赖；未真实验证百炼多轮工具协议、生产权限或业务效果；保留字符预算、同步上游超时、旧重试标记与跨服务取证限制 |
+| 2026-10-29 | 标准补证工具改为默认开启，并登记事故类型与当前来源边界 | 运行时/构造/环境模板/Compose 一致；75 项断网 Mock 测试通过、2 项数据库测试跳过；未配置/空值/显式关闭和旧规划互斥回归，配置与本地链接核对；[业务回顾](incident-business-scenarios.md) | 不扩展授权范围、工具预算或证据来源；无新连接器/表/模型；生产日志手工输入仍统一标为 ci_log，需核对实际来源；真实百炼多轮协议与运行部署未验证 |

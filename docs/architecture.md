@@ -2,8 +2,8 @@
 
 | 文档属性 | 当前值 |
 | --- | --- |
-| 最近核对日期 | 2026-10-27（Asia/Shanghai；局部核对标准只读 Tool、源码会话、模型回放与轨迹；既有研究核对保留，真实平台演练沿用 2026-10-21） |
-| 核对基线 | codex/standard-tools-upgrade 工作区，基线 main/63aecdd；77 项针对性测试含隔离 PostgreSQL；未更新原演练或生产部署 |
+| 最近核对日期 | 2026-10-29（Asia/Shanghai；局部核对工具默认值、配置转发与业务场景边界；既有验证保留，真实平台演练沿用 2026-10-21） |
+| 核对基线 | codex/standard-tools-upgrade 工作区，基线 9b33965；本次 75 项通过、2 项数据库测试跳过；10-27 的隔离数据库验证保留；未更新原演练或生产部署 |
 | 文档职责 | 记录整个项目当前架构、组件边界、数据流、部署、已知缺口及后续升级 |
 | 维护规则 | 架构相关改动必须在同一次改动中更新本文，规则见 [AGENTS.md](../AGENTS.md) |
 | 专项台账 | [证据与上下文管理台账](evidence-context-ledger.md)记录取证、上下文和 RAG 的详细方法及依据 |
@@ -41,7 +41,7 @@ flowchart LR
     Code -. "默认关闭：一次符号规划" .-> Model
     Legacy --> Indexer
     Worker --> Model["模型生成 / Embedding 接口"]
-    Worker -. "显式启用" .-> Tools["标准只读 Tool 执行器"]
+    Worker -. "默认开启，可关闭" .-> Tools["标准只读 Tool 执行器"]
     Model -. "function_call" .-> Tools
     Tools -. "call_id 结果" .-> Model
     Tools --> Code
@@ -86,7 +86,7 @@ flowchart LR
 1. **创建问题。** 手工请求保存 `IncidentRecord`；GitHub 入口验证 HMAC-SHA256，只接收 `pull_request` 的 `closed + merged` 事件，以 delivery ID 去重，保存 PR 与 head/base/merge SHA。当前自动入口未筛选 PR 是否确为 Bug 修复，统一赋予 `bug_fix` 类型。
 2. **提交生成任务。** Webhook 和 `/run` 将问题 ID 送入 Celery，API 返回 job ID；Worker 读取 PostgreSQL 的问题并执行 Pipeline。手工创建本身不自动运行。
 3. **采集材料。** GitHub 获取 PR、commit、diff、评论及关联 SHA 的失败 CI run；飞书获取配置群的时间窗口消息和配置文档。手工描述与日志也转为 Evidence。
-4. **扩展源码。** 同仓库固定 head SHA 归档保留原静态检索，增加 Python 限定方法、导入别名、直接继承及后台任务引用的两跳候选（最多 24 个种子/邻居）；方法起点参与选区，原文件/区域上限继续生效。`.insight/context.json` 可关联同仓库服务文档和一跳依赖；显式启用规划后，有未解析方法时最多追加一次符号补取。
+4. **扩展源码。** 同仓库固定 head SHA 归档保留原静态检索，增加 Python 限定方法、导入别名、直接继承及后台任务引用的两跳候选（最多 24 个种子/邻居）；方法起点参与选区，原文件/区域上限继续生效。`.insight/context.json` 可关联同仓库服务文档和一跳依赖；关闭标准工具并显式启用旧规划后，有未解析方法时最多追加一次符号补取。
 5. **保存与筛选。** 全部 Evidence 原文先入库，再在副本上去重、排序、裁剪和执行字符预算。重复写同一 Evidence ID 时保留原文，只更新是否选中及选择原因。
 6. **检索历史。** 构造查询，对查询和所选证据向量化；`OpenAIEmbedder` 按最多 20 条顺序分批请求，并校验每批返回的索引覆盖全部输入，防止向量与原文错位。所选证据片段写入 `evidence_chunks`，历史检索读取已发布的 `knowledge_entries/knowledge_chunks`。知识发布和检索查询复用同一适配器；没有新增配置或表迁移。
 7. **生成与校验。** 通过 Responses Function Calling 输出 `RetrospectiveDocument`；Pydantic 校验结构，`QualityValidator` 校验核心字段的 Evidence ID 与引文。AI 引文同时核对本次模型片段和入库原文。默认最多生成 2 次；第二次通过临时问题副本中的 `generation_validation_errors` 将上一轮硬校验错误传给生成器，模型输入键为 `previous_validation_errors`，不把错误当作事故原始证据。提示优先复制不超过 160 字的单行引文，并保留 diff 的 +/- 前缀；160 字是提示要求，不是新增校验阈值。硬校验通过后才保存 AI 版本并进入待审核，驳回重生复用同样反馈方式。
@@ -96,7 +96,7 @@ flowchart LR
 
 #### 可选标准工具补证（2026-10-27）
 
-`REVIEW_TOOLS_ENABLED=1` 时，在 retrieving 阶段、独立写作前执行三个标准只读 Function Tools，最多两轮模型决策和累计四次实际工具执行。每轮最多 700 输出 Token、15 秒、禁用 SDK 重试；初始视图最多 8,000 证据字符、12 条及两张短历史卡。工具正文共享 8,000 字符，重复调用只返回已给过的 ID，不重复正文。工具执行间检查 30 秒软期限；同步历史检索内部仍沿用连接器超时，不保证硬中断。关闭时保持原流程，自定义生成器不支持工具协议时兼容原路径。
+`REVIEW_TOOLS_ENABLED` 未配置或留空时默认开启；显式设为 `0`/`false` 可关闭。开启时，在 retrieving 阶段、独立写作前执行三个标准只读 Function Tools，最多两轮模型决策和累计四次实际工具执行。每轮最多 700 输出 Token、15 秒、禁用 SDK 重试；初始视图最多 8,000 证据字符、12 条及两张短历史卡。工具正文共享 8,000 字符，重复调用只返回已给过的 ID，不重复正文。工具执行间检查 30 秒软期限；同步历史检索内部仍沿用连接器超时，不保证硬中断。关闭时保持原流程，自定义生成器不支持工具协议时兼容原路径。
 
 代码采集和工具共用一个 source.open、仓库索引和 Python 方法索引；会话文件总量受 max_expanded_files、每文件区域额度约束。工具只接受服务端固定事故/仓库/SHA；飞书工具搜索本次已采集群/文档，历史查询继承仓库与类型过滤。新代码先存原文，再返回受限片段；文档/历史按命中位置取窗口，历史仍是 KnowledgeHit。
 
@@ -128,7 +128,7 @@ flowchart LR
 | --- | --- | --- |
 | 源码扩展 | 基础 10 个候选文件；按改动文件数最多扩至 40 个；每文件最多 2 个区域，每段约 2,400 字符；唯一目标文件的调用/导入边可扩两跳 | [源码收集器](../backend/src/repo_maintainer/retrospective_code_context.py) |
 | 证据筛选 | 内容指纹去重、来源与相关性排序、来源覆盖、多改动文件覆盖；日志取错误附近行，diff 选相关 hunk | [ContextSelector](../backend/src/repo_maintainer/retrospective_pipeline.py) |
-| 标准工具（可选） | 默认关闭；三个只读工具；两轮/四次执行；8,000 工具正文字符；最终写作另行筛选 | [Tool 执行器](../backend/src/repo_maintainer/retrospective_tools.py)及[方案](standard-tools-upgrade.md) |
+| 标准工具（可关闭） | 默认开启；三个只读工具；两轮/四次执行；8,000 工具正文字符；最终写作另行筛选 | [Tool 执行器](../backend/src/repo_maintainer/retrospective_tools.py)及[方案](standard-tools-upgrade.md) |
 | 模型证据预算 | 24,000 字符总预算，单条配置上限 6,000 字符；属于字符计量，未覆盖整个请求的精确 Token 预算 | [运行配置](../backend/src/repo_maintainer/retrospective_runtime.py) |
 | 知识切片 | 五类：完整案例卡、症状、根因、修复、预防；长字段约 1,200 字符一段、重叠约 100；保存格式版本与来源 ID | [切片实现](../backend/src/repo_maintainer/retrospective_pipeline.py) |
 | 历史召回 | 仓库与类型过滤；全文和向量各按案例取最佳片段，再各取 40 个案例，RRF 常数 60 | [存储检索](../backend/src/repo_maintainer/retrospective_store.py) |
@@ -233,7 +233,7 @@ Axios 默认请求 `/api`，默认超时 15 秒。同步重新生成、发布和
 
 持续追踪以下缺口；实施后更新相关章节、验证结果和变更记录：
 
-当前已实现轻量方法发现、显式同仓库服务文档导航、输入快照，以及默认关闭的[标准 Tool 有界循环](standard-tools-upgrade.md)。跨仓库取证、部署版本解析、生产拓扑与运行证据连接器仍未实现；不从 77 项隔离测试推断真实模型质量或生产效果。
+当前已实现轻量方法发现、显式同仓库服务文档导航、输入快照，以及默认开启的[标准 Tool 有界循环](standard-tools-upgrade.md)。跨仓库取证、部署版本解析、生产拓扑与运行证据连接器仍未实现；不从既有隔离测试推断真实模型质量或生产效果。[业务场景回顾](incident-business-scenarios.md)列出配置/发布、容量、数据、依赖、权限和模型服务事故所需材料；这些类别不等于已接通对应生产数据源。
 
 - 请求级精确 Token 预算尚未实现；新生成已存逻辑输入快照，旧生成无法仅凭 Evidence ID 复原；未存失败响应全文，也未验证跨版本自动重放。
 - 源码主要分析修复后的固定 head 版本；修复前后的双版本对照、动态调用与跨服务运行关系仍需增强。
@@ -279,5 +279,6 @@ Axios 默认请求 `/api`，默认超时 15 秒。同步重新生成、发布和
 | 2026-10-27 | 补核 2026 年新模型及相反结果，避免用旧模型直接论证当前能力 | 更新研究说明与证据台账，预算依据收窄为证据组织及质量/成本，运行架构不变 | 核对 LURCH、Mastra、CliffCompaction、Distractor-Aware Truncation、Classifier 的原文、实际模型、日期及实验限制；本地链接检查；未执行新模型实验 | 无迁移；当前字符预算保持，尚无本项目质量/成本对照，近期预印本与企业报告也不能证明普遍退化 |
 | 2026-10-27 | 明确研究只需支持长上下文仍可能受干扰，将输入控制必要性与参数调优分开 | 研究说明与台账强调选择飞书/源码证据、避免无界堆积；组件和运行策略不变 | 复核 Classifier 原文及既有近期研究，核对文档一致性和本地链接；未运行新模型实验 | 无迁移；不要求通用失效阈值，不宣称固定预算最优，仍须防止裁剪遗漏关键证据 |
 | 2026-10-27 | 按先沉淀方案、后新分支实施的顺序接入标准只读 Tool | 新增 registry/executor、同快照会话、有界模型工具循环、结果回送与轨迹；新增开关默认关闭，最终审核/发布不交给模型 | 77 项针对性回归含隔离 PostgreSQL 通过；Mock 验证协议/回放、预算、缓存、失败回退、证据身份与持久化；Compose 和本地链接核对 | 复用现有表，无新 API/依赖/迁移（旧部署需已有 generation_contexts）；未真实调用百炼/GitHub/飞书或更新运行环境；历史检索超时为同步连接器边界，仍无整体 Token 硬限额 |
+| 2026-10-29 | 按用户要求将标准 Tool 默认开启，并核对真实事故适用范围 | Pipeline 构造、运行时空值、环境模板及 API/Worker Compose 默认统一启用；显式 0/false 保留关闭；不叠加旧符号规划；新增场景回顾文档 | 断网 Mock 回归 75 项通过、2 项数据库测试跳过；验证未配置/留空/显式开关及旧规划互斥、Compose 转发和本地链接；公开案例仅作业务参考 | 无表/权限/依赖迁移；旧容器需构建并更新 API/Worker 才生效，显式 0 配置需调整；未验证真实百炼多轮协议，未部署或自动接入监控/配置/发布事件 |
 
 后续追加记录使用上述列结构；不要用新行替代正文更新，也不要覆盖历史行。
