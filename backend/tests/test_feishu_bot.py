@@ -165,7 +165,7 @@ class FeishuBotTests(unittest.TestCase):
         self.assertEqual(incident.repo_id, "feishu:cli-test:oc-allowed")
         self.assertEqual((incident.repo_name, incident.commit_sha, incident.pr_number), ("", "", None))
         self.assertEqual(incident.source_type, "feishu_message")
-        self.assertEqual(incident.metadata["feishu_window"], {"start_time": self.message_time - 7200,
+        self.assertEqual(incident.metadata["feishu_window"], {"start_time": self.message_time - 86400,
                                                             "end_time": self.message_time})
         self.assertEqual(incident.metadata["service"], "image-inference")
         self.assertEqual(incident.metadata["environment"], "prod")
@@ -358,7 +358,7 @@ class FeishuBotTests(unittest.TestCase):
         incident = store.get_incident(self.identity)
         self.assertEqual(incident.feishu_chat_ids, ["oc-allowed"])
         self.assertEqual(incident.feishu_doc_tokens, [])
-        collaboration._list_messages.assert_called_once_with("oc-allowed", self.message_time - 7200, self.message_time)
+        collaboration._list_messages.assert_called_once_with("oc-allowed", self.message_time - 86400, self.message_time)
         collaboration._read_document.assert_not_called()
         collaboration.publish.assert_not_called()
         git._json.assert_not_called()

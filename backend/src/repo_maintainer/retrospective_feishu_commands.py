@@ -13,7 +13,7 @@ from typing import Literal
 MAX_COMMAND_CHARS = 4000
 MAX_TITLE_CHARS = 200
 MAX_WINDOW_SECONDS = 72 * 60 * 60
-DEFAULT_WINDOW_SECONDS = 2 * 60 * 60
+DEFAULT_WINDOW_SECONDS = 24 * 60 * 60
 # Commands use current China Standard Time; no host timezone/tzdata dependency.
 COMMAND_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
 FEISHU_COMMAND_HELP = (
@@ -25,7 +25,8 @@ FEISHU_COMMAND_HELP = (
     "也可使用“复盘 <标题>”；仅标题必填，服务、环境、时间可省略。"
     "时间按北京时间（Asia/Shanghai），支持“今天 14:00-15:00”或"
     "“2026-10-28 23:00~2026-10-29 01:00”。"
-    "未填时间默认查询这条消息发送前 2 小时；窗口不能超过 72 小时或晚于消息发送时间。"
+    "未填时间默认查询这条消息发送前 24 小时；填写时另起一行“时间：开始日期 时刻~结束日期 时刻”。"
+    "同一天可省略结束日期，也可显式指定短于 24 小时的范围；窗口不能超过 72 小时或晚于消息发送时间。"
     "跨日请写出两个日期，不会自动推断次日。标题最多 200 字，整条命令最多 4000 字。"
     "仅支持文本消息及以上三个可选字段，不支持指定仓库、其他群或文档。"
     "发送“@机器人 复盘帮助”可查看此说明。"

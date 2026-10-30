@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 
 from repo_maintainer.retrospective_feishu_commands import (
     COMMAND_TIMEZONE,
-    DEFAULT_WINDOW_SECONDS,
     FEISHU_COMMAND_HELP,
     parse_feishu_command,
 )
@@ -44,7 +43,9 @@ class FeishuCommandTests(unittest.TestCase):
         self.assertEqual(result.description, result.title)
         self.assertEqual(result.message_time, int(self.sent_at.timestamp()))
         self.assertEqual(result.end_time, result.message_time)
-        self.assertEqual(result.start_time, result.message_time - DEFAULT_WINDOW_SECONDS)
+        self.assertEqual(result.start_time, result.message_time - 86400)
+        self.assertEqual(datetime.fromtimestamp(result.start_time, COMMAND_TIMEZONE).isoformat(),
+                         "2026-10-28T16:30:20+08:00")
         self.assertEqual((result.message_id, result.chat_id, result.sender_open_id, result.event_id),
                          ("om-1", "oc-allowed", "ou-user", "ev-1"))
         self.assertEqual((result.service, result.environment, result.error), ("", "", ""))
@@ -100,6 +101,7 @@ class FeishuCommandTests(unittest.TestCase):
         self.assertEqual(result.action, "help")
         self.assertIsNone(result.start_time)
         self.assertIn("72 小时", FEISHU_COMMAND_HELP)
+        self.assertIn("前 24 小时", FEISHU_COMMAND_HELP)
         self.assertEqual(self.parse("@_user_1 复盘帮助 多余参数").action, "invalid")
 
     def test_missing_title_is_invalid_even_when_followed_by_fields(self):
