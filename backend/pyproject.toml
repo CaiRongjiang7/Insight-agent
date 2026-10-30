@@ -20,6 +20,7 @@ dependencies = [
   "openai>=2.0.0,<3.0.0",
   "redis>=5.2.0,<7.0.0",
   "celery[redis]>=5.4.0,<6.0.0",
+  "lark-oapi==1.7.5",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +39,7 @@ dev = [
 repo-agent = "repo_maintainer.cli:main"
 repo-agent-api = "repo_maintainer.api:run_dev_server"
 repo-agent-migrate = "repo_maintainer.retrospective_migrate:main"
+repo-agent-feishu = "repo_maintainer.retrospective_feishu_listener:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

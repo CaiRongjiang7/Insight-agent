@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
+from contextlib import contextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from .retrospective_models import IncidentCreate, RetrospectiveDocument
+from .retrospective_models import IncidentCreate, IncidentStatus, RetrospectiveDocument
 from .retrospective_pipeline import PipelineError, RetrospectivePipeline
 
 
@@ -22,6 +23,13 @@ class EditCommand(BaseModel):
 
 
 def mount_retrospective_api(app: FastAPI) -> None:
+    @contextmanager
+    def execution(value, incident_id):
+        with value.store.execution_lock(incident_id) as acquired:
+            if not acquired:
+                raise PipelineError("This incident is already being processed")
+            yield
+
     def pipeline(request: Request) -> RetrospectivePipeline:
         value = getattr(request.app.state, "retrospective_pipeline", None)
         if value is None:
@@ -80,9 +88,12 @@ def mount_retrospective_api(app: FastAPI) -> None:
         if queue is None:
             raise HTTPException(status_code=503, detail="retrospective task queue is unavailable")
         try:
-            value.store.get_incident(incident_id)
-            job_id = queue.enqueue(incident_id)
-            value.store.create_job(job_id, incident_id, "collecting", "queued")
+            with execution(value, incident_id):
+                incident = value.store.get_incident(incident_id)
+                if incident.status not in {IncidentStatus.RECEIVED, IncidentStatus.FAILED}:
+                    raise PipelineError("Only received or failed incidents can be started")
+                job_id = queue.enqueue(incident_id)
+                value.store.create_job(job_id, incident_id, "collecting", "queued")
             return {"incident_id": incident_id, "job_id": job_id, "accepted": True}
         except Exception as exc:
             raise as_http_error(exc) from exc
@@ -91,7 +102,8 @@ def mount_retrospective_api(app: FastAPI) -> None:
     def retry_incident(incident_id: str, request: Request) -> dict[str, Any]:
         value = pipeline(request)
         try:
-            version = value.retry(incident_id)
+            with execution(value, incident_id):
+                version = value.retry(incident_id)
             return version.model_dump(mode="json")
         except Exception as exc:
             raise as_http_error(exc) from exc
@@ -100,7 +112,8 @@ def mount_retrospective_api(app: FastAPI) -> None:
     def regenerate_incident(incident_id: str, request: Request) -> dict[str, Any]:
         value = pipeline(request)
         try:
-            version = value.regenerate(incident_id)
+            with execution(value, incident_id):
+                version = value.regenerate(incident_id)
             return version.model_dump(mode="json")
         except Exception as exc:
             raise as_http_error(exc) from exc
@@ -109,7 +122,8 @@ def mount_retrospective_api(app: FastAPI) -> None:
     def edit_document(incident_id: str, payload: EditCommand, request: Request) -> dict[str, Any]:
         value = pipeline(request)
         try:
-            version = value.edit(incident_id, payload.document, payload.actor)
+            with execution(value, incident_id):
+                version = value.edit(incident_id, payload.document, payload.actor)
             return version.model_dump(mode="json")
         except Exception as exc:
             raise as_http_error(exc) from exc
@@ -118,7 +132,8 @@ def mount_retrospective_api(app: FastAPI) -> None:
     def approve(incident_id: str, payload: ReviewCommand, request: Request) -> dict[str, Any]:
         value = pipeline(request)
         try:
-            return value.approve(incident_id, payload.actor, payload.reason).model_dump(mode="json")
+            with execution(value, incident_id):
+                return value.approve(incident_id, payload.actor, payload.reason).model_dump(mode="json")
         except Exception as exc:
             raise as_http_error(exc) from exc
 
@@ -126,7 +141,8 @@ def mount_retrospective_api(app: FastAPI) -> None:
     def reject(incident_id: str, payload: ReviewCommand, request: Request) -> dict[str, Any]:
         value = pipeline(request)
         try:
-            return value.reject(incident_id, payload.actor, payload.reason).model_dump(mode="json")
+            with execution(value, incident_id):
+                return value.reject(incident_id, payload.actor, payload.reason).model_dump(mode="json")
         except Exception as exc:
             raise as_http_error(exc) from exc
 
@@ -134,7 +150,8 @@ def mount_retrospective_api(app: FastAPI) -> None:
     def publish(incident_id: str, payload: ReviewCommand, request: Request) -> dict[str, Any]:
         value = pipeline(request)
         try:
-            result = value.publish(incident_id, payload.actor)
+            with execution(value, incident_id):
+                result = value.publish(incident_id, payload.actor)
             publication = result["publication"]
             return {**result, "publication": publication.model_dump(mode="json")}
         except Exception as exc:
@@ -175,8 +192,9 @@ def mount_retrospective_api(app: FastAPI) -> None:
             queue = getattr(request.app.state, "retrospective_queue", None)
             if queue is None:
                 raise PipelineError("retrospective task queue is unavailable")
-            job_id = queue.enqueue(incident.id)
-            value.store.create_job(job_id, incident.id, "collecting", "queued")
+            with execution(value, incident.id):
+                job_id = queue.enqueue(incident.id)
+                value.store.create_job(job_id, incident.id, "collecting", "queued")
             return {"status": "accepted", "incident_id": incident.id, "job_id": job_id, "duplicate": False}
         except Exception as exc:
             if "signature" in str(exc).lower():

@@ -26,7 +26,7 @@
           @click="select(item.id)"
         >
           <strong>{{ item.title }}</strong>
-          <span>{{ item.repo_name || item.repo_id || "未指定仓库" }}</span>
+            <span>{{ item.source_type === "feishu_message" ? "飞书群聊事故" : (item.repo_name || item.repo_id || "未指定仓库") }}</span>
           <el-tag size="small" :type="statusType(item.status)">{{ item.status }}</el-tag>
         </button>
       </el-card>
@@ -121,11 +121,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { retrospectiveApi, type CoreDetail, type CoreDocument, type CoreIncident, type CoreStatus } from "@/api/retrospective";
 
 const incidents = ref<CoreIncident[]>([]);
+const route = useRoute();
 const selectedId = ref("");
 const detail = ref<CoreDetail | null>(null);
 const connectorStatus = ref<Record<string, any>>({ ready: false });
@@ -191,7 +193,12 @@ async function saveDocument() {
   } catch (error) { ElMessage.error(`保存失败：${String(error)}`); }
 }
 
-onMounted(load);
+function linkedIncident() {
+  const value = route.query.incident_id;
+  return typeof value === "string" ? value : "";
+}
+onMounted(() => { selectedId.value = linkedIncident(); return load(); });
+watch(() => route.query.incident_id, () => { selectedId.value = linkedIncident(); void load(); });
 </script>
 
 <style scoped>

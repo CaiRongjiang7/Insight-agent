@@ -1,6 +1,6 @@
 # 智能复盘证据来源与上下文管理台账
 
-> 当前实现基线：2026-10-29（标准 Tool 默认开启；其余行为沿用既有记录）；最近文档核对：2026-10-29（局部开关/兼容回归与场景证据评审；本次数据库测试跳过，10-27 验证保留；真实平台演练沿用 2026-10-21）。本文只描述 `RetrospectivePipeline` 智能复盘主链路；整个项目的组件关系与部署见[项目架构文档](architecture.md)。旧代码修复 Agent 的记忆和 Token 预算不是本链路的运行机制。**每次修改复盘方案或实现时，同步修订相关章节，并在文末追加变更记录。**
+> 当前实现基线：2026-10-30，`codex/standard-tools-upgrade` 的 `2fd6e5b` + 工作区；最近文档核对：2026-10-30（局部核对飞书范围/原文、API/Worker 共享锁、数据库重试、隔离验证与本机部署；新后端镜像 + internal 隔离 PG 中 151 项相关回归全过、无跳过，含 4 项 PG；官方后台长连接成功、应用 1.0.3 已发布，真实 @复盘帮助已收到回复；本次真实建单/取证/模型生成未验收）。完整业务演练沿用 2026-10-21 的历史记录，旧演练数据不在当前新建空库。本文只描述 `RetrospectivePipeline` 智能复盘主链路；整个项目的组件关系与部署见[项目架构文档](architecture.md)。旧代码修复 Agent 的记忆和 Token 预算不是本链路的运行机制。**每次修改复盘方案或实现时，同步修订相关章节，并在文末追加变更记录。**
 
 ## 1. 证据从哪里来
 
@@ -8,17 +8,33 @@
 
 | 来源类型 | 当前采集方式 | 可追溯定位 | 事实属性与边界 |
 | --- | --- | --- | --- |
-| `github_pr` | PR 标题/描述及 issue 评论；手工记录的非 `manual` 问题也可能形成此类条目 | PR URL、评论 URL、仓库/PR 编号 | **参与者陈述**，可以说明意图或排查过程，不能单独证明故障机理。 |
+| `github_pr` | PR 标题/描述及 issue 评论；入口标题/描述仅在 `source_type=github_pr` 时归入此类 | PR URL、评论 URL、仓库/PR 编号 | **参与者陈述**，可以说明意图或排查过程，不能单独证明故障机理。 |
 | `github_commit` | PR commits 的提交消息 | Commit SHA、commit URL | **提交者陈述**，不是代码执行结果。 |
 | `github_diff` | PR files 接口返回的文本 `patch` | 文件路径、PR/文件 URL、问题关联的 SHA | **代码变更原文**；接口未返回 `patch` 时不会生成该条证据，diff 不覆盖未改动代码。 |
 | `repository_code` | 固定 PR head SHA（缺失时用问题记录的 commit）通过 GitHub ZIP 归档接口下载同仓库源码到临时目录；用 diff 行、错误栈、符号、调用、导入和测试引用定位源码片段，不读取 Agent 工作区的本地仓库 | SHA、文件路径、起止行及固定版本的 blob URL | **该版本源码原文**。`relation`/`retrieval_score` 只是静态候选线索，不能单独证明运行时调用或因果。基础上限 10 个文件，多 diff 时最多扩至 40 个文件，每文件最多 2 个不同区域、每段最多约 2,400 字符；私有仓库的令牌需要 `Contents: Read` 权限。 |
 | `ci_log` | GitHub Actions 中与记录的 SHA 对应的失败 run 日志；手工问题也可提供日志 | Run URL 或问题 ID、SHA | **运行记录**。若日志归档不可取，连接器可能只保存 run URL；手工日志的真实性仍需核对。 |
-| `feishu_message` | 配置群在问题时间窗口内的消息 | `chat_id`、`message_id`、时间、`feishu://message/{id}` | **沟通记录**，其中的判断仍是人的陈述。 |
+| `feishu_message` | 指定群窗口内的消息；飞书命令入口还直接保存 metadata.feishu_trigger_text 原始触发正文，不拿解析后的标题替代；采集排除同触发消息和自身机器人回复 | `chat_id`、`message_id`、`occurred_at`、`feishu://message/{id}`；事故 metadata 另存事件、发送者和窗口 | **沟通原文与参与者陈述**，不等于配置审计或确认根因；机器人生成回复不应成为自己的事故依据。 |
 | `feishu_doc` | 配置的文档 token 对应的原文 | 文档 token、文档 URL | **文档陈述**，可能比事故发生时间晚，需核对时序。 |
-| `manual` | 手工问题的标题和描述 | 问题 ID、可选 `source_url` | **提交人陈述**；不应默认为已验证事实。 |
+| `manual` | 手工及其他非 GitHub PR、非飞书消息入口的标题和描述 | 问题 ID、可选 `source_url` | **提交人陈述**；不应默认为已验证事实，也不再因来源字符串不是 manual 而误记为 PR。 |
 | 历史案例 `KnowledgeHit` | 审核、发布并入库的复盘，通过 PostgreSQL 全文检索与 pgvector 召回 | `knowledge_id`、历史问题 ID、发布 URL | **类比参考**。目前作为 `historical_cases` 输入，**不是当前问题的 `Evidence`，没有可用于当前引用校验的 Evidence ID**。枚举中的 `historical` 不代表主链路会将召回案例转成 Evidence。 |
 
 采集实现见 [`retrospective_connectors.py`](../backend/src/repo_maintainer/retrospective_connectors.py) 和 [`retrospective_code_context.py`](../backend/src/repo_maintainer/retrospective_code_context.py)；历史案例的入库与检索见 [`retrospective_pipeline.py`](../backend/src/repo_maintainer/retrospective_pipeline.py) 和 [`retrospective_store.py`](../backend/src/repo_maintainer/retrospective_store.py)。
+
+### 飞书命令的来源与授权范围（已部署并验证帮助收发，复盘闭环待验收）
+
+独立 [Listener](../backend/src/repo_maintainer/retrospective_feishu_listener.py) 通过 `lark-oapi==1.7.5` 接收长连接事件；[解析器](../backend/src/repo_maintainer/retrospective_feishu_commands.py)要求事件应用匹配、群在 `FEISHU_CHAT_IDS` 白名单、发送者为用户、消息为群文本且实际 @了自身机器人，再识别“发起复盘”“复盘”或“复盘帮助”。这是明确命令触发，不由模型扫描普通讨论自动判断是否发生事故。传输认证由官方连接承担，Listener 与 Worker 都校验范围。
+
+[命令处理](../backend/src/repo_maintainer/retrospective_feishu_bot.py)只设置当前群，文档列表为空，不继承其他默认群/文档；不接受任意群、文档、仓库或 SHA 参数。时间按北京时间，以消息发送时刻为锚点，省略时取之前 2 小时；显式范围须先后有效、至多 72 小时且结束不晚于触发消息。跨日须写出结束日期。该窗口保存为整数 Unix 秒的 `metadata.feishu_window`，连接器再次检查类型、顺序和跨度；旧 PR/手工入口未提供此字段时保留原先时间中心前 3 天、后 1 天的范围。
+
+原始触发文本和群聊原文存为 `feishu_message`；服务/环境来自参与者填写，保存在 metadata 和描述，只作线索，不作为消息或历史案例的严格过滤条件。当前无仓库的飞书事故使用 `repo_id=feishu:{app_id}:{chat_id}`，历史召回和发布知识保持同一群范围，不因空 repo_id 读取所有仓库。不能从这个分区推断知识已具备跨服务拓扑或服务/环境级权限隔离。
+
+事件经 Redis/Celery 到达 Worker；稳定事故 ID、数据库唯一键和非阻塞执行锁保护同一启动消息，成功回复阶段存入事故 metadata。原始材料、选中材料及模型调用快照仍按既有流程持久化，不增加表或 RAG 切片类型。API 的 run/retry/regenerate/edit/approve/reject/publish、GitHub 入队路径（含 inline）和两类 Worker 共用事故锁；API 竞争返回 409，常规 Worker 只运行 received/failed，其他状态跳过。飞书执行中断会转 failed 要求人工检查，避免重复投递自动生成第二份证据/版本。直接调用 Pipeline 不自动加锁，也没有跨系统 exactly-once 保证。
+
+飞书任务对通知失败、锁冲突和 psycopg `OperationalError/InterfaceError` 最多重试 5 次、退避上限 60 秒，覆盖首次建单前的暂时数据库连接故障；已有复盘的通知重试不重新生成。有限重试不等于事务发件箱或永久补偿，真实故障重投、事故生成和模型链路仍须业务验收。
+
+群消息、查询、所选材料及生成输入会经既有适配器发送到配置的模型/embedding 服务；本机既有配置是百炼，启用前须核对群材料与该服务的使用范围。没有“只在飞书内计算”的保证，也未新建事故自动处置权限。草稿必须在工作台人工核对、审核并发布后，才进入历史知识；群中触发不替代审核。配置、权限和真实验收步骤见[飞书机器人部署说明](feishu-bot-setup.md)。
+
+2026-10-30 已重建镜像并在本机部署 API、Worker、前端、Redis、PostgreSQL 和 Listener，API healthy/ready；飞书后台确认长连接成功，`im.message.receive_v1` 已添加且所需权限均为既有已开通权限，无新增权限，应用版本 1.0.3 显示已发布/通过。用户真实 @复盘帮助已收到回复，Worker 记录任务成功、`status=help`、耗时 0.623 秒，事故数仍为 0。这验证了真实收发链路，没有验证事故建单、群聊取证或本次模型生成。当前 Docker 引擎启动时无旧镜像/容器/卷，当前数据库新建为空；历史演练结论不能当作新库现有条目或本次生成结果。
 
 ### 当前方案的依据索引
 
@@ -31,6 +47,7 @@
 | `CTX-03` | 原文入库，筛选出的片段受字符预算约束；不同改动文件优先各得一个源码片段 | [`ContextSelector`](../backend/src/repo_maintainer/retrospective_pipeline.py)、[`add_evidence`](../backend/src/repo_maintainer/retrospective_store.py)、[`test_context_selection_covers_distinct_changed_code_files`](../backend/tests/test_retrospective_pipeline.py) | 验证选择器与存储语义；预算不足时仍可能遗漏文件；新请求已加快照，旧请求与自动重放仍有缺口。 |
 | `CTX-04` | 核心字段引文按 Evidence ID 和原文字符串校验 | [`QualityValidator`](../backend/src/repo_maintainer/retrospective_pipeline.py)、[`test_quality_validator_rejects_unknown_or_fabricated_citations`](../backend/tests/test_retrospective_pipeline.py) | 验证存在性与字符串匹配；不验证因果支持度。 |
 | `CTX-05` | 历史案例经发布后入库并用于后续召回 | [`RetrospectivePipeline`](../backend/src/repo_maintainer/retrospective_pipeline.py)、[`test_complete_review_publish_and_retrieval_loop`](../backend/tests/test_retrospective_pipeline.py) | 模拟闭环及 2026-10-21 单条重建案例的真实 Wiki、pgvector 入库、召回和仓库排除验证；包含人工运维恢复，不代表全自动成功率或线上召回质量。 |
+| `CTX-06` | 飞书显式命令限制当前群与有界时间窗，保留触发原文并排除自生成回复；无仓库历史按应用/群隔离；写操作共享事故锁 | [解析器](../backend/src/repo_maintainer/retrospective_feishu_commands.py)、[命令处理](../backend/src/repo_maintainer/retrospective_feishu_bot.py)、[连接器测试](../backend/tests/test_feishu_connector.py)、[命令测试](../backend/tests/test_feishu_commands.py)、[执行锁测试](../backend/tests/test_incident_execution_lock.py)、[真实 SDK/Celery 库 Mock](../backend/tests/test_feishu_task_runtime.py) | 新后端镜像/internal 隔离 PG 中 151 项相关回归通过、无 skip（含 4 项 PG）；SDK/Celery 库 Mock 5 项通过，前端本机/镜像 build、Compose 和 228 个本地链接通过；官方后台连接及版本发布已确认，真实 @复盘帮助收到回复；真实建单/取证/故障重投/本次模型生成未验收。 |
 
 ### 单个问题的来源记录模板
 
@@ -42,17 +59,18 @@
 
 ## 2. 上下文如何构建与压缩
 
-当前流程：**GitHub/飞书原始采集 → 局部代码扩展 → 全部 Evidence 原文入库 → 去重和相关性筛选 → 裁剪进入模型的副本 → 历史案例召回 → 可选标准 Tool 补证及最终重选 → 结构化生成 → 双层引用校验**。代码扩展发生在入库前，扩展结果本身也作为原始 Evidence 入库。入口见 [`RetrospectivePipeline.run()`](../backend/src/repo_maintainer/retrospective_pipeline.py)。
+当前流程：**可得的 GitHub/飞书/手工原始采集 → 有仓库与固定版本时局部代码扩展 → 全部 Evidence 原文入库 → 去重和相关性筛选 → 裁剪进入模型的副本 → 历史案例召回 → 可选标准 Tool 补证及最终重选 → 结构化生成 → 双层引用校验**。无 PR 的飞书命令可仅依靠触发原文和当前群窗口，源码与 CI 缺失不能自动补成事实。代码扩展发生在入库前，扩展结果本身也作为原始 Evidence 入库。入口见 [`RetrospectivePipeline.run()`](../backend/src/repo_maintainer/retrospective_pipeline.py)。
 
 | 步骤 | 已实现的方法 | 被保留的内容与限制 |
 | --- | --- | --- |
+| 飞书命令范围 | 当前白名单群；默认触发前 2 小时、显式窗口最多 72 小时；触发正文单独保存、历史列表跳过自身机器人及同触发消息 | 群聊仍是参与者陈述；服务/环境不作严格过滤；无仓库时按应用/群 repo_id 隔离历史。旧入口默认窗口未改变。 |
 | 固定代码版本 | 保存 webhook 的 head/base SHA；源码扩展使用 head SHA，缺失时使用记录的 commit SHA | 代码 Evidence 带实际使用的 SHA 和行号。当前主要分析**修复后的版本**；修复前状态主要来自 diff，尚未自动建立前后两版源码对照。归档不可用时保留其他证据，并在问题元数据记录 `code_context_warning`。 |
 | 局部源码扩展 | 每个 diff 文件的新增行映射 Python AST 函数/类；结合错误栈行号、调用方/被调用方、导入关系及测试引用选候选；唯一目标文件的调用/导入边可扩至两跳；同文件最多取 2 个不同区域，候选文件基础 10 个，按改动文件数最多扩至 40 个，并给未改动文件留名额 | 先临时索引同仓库快照，再只发送候选源码片段及来源定位，不把全仓代码放入模型。已有索引包含调用、依赖和部分数据流/控制流图信号；两跳关系要求目标文件唯一。跨语言和动态调用可能漏召回或误召回，图关系只作为检索线索。 |
 | 去重与排序 | 内容规范化后按指纹去重；源码额外包含位置，避免不同文件的同文片段合并；按来源优先级、关键词重合和源码检索分排序 | `selection_reason` 记录选择原因；保留不同来源的首条候选，源码优先留一条非 diff 文件。排序不是事实可信度评分。 |
 | 日志裁剪 | 优先取包含错误、异常、失败等词或问题关键词的行及前后各 2 行；无匹配时取前 120 行 | 原日志仍在库；模型只看裁剪后的副本。若后续预算再次截断，日志取首尾片段。 |
 | Diff 裁剪 | 选中与问题关键词重合的 hunk；无匹配时取前 3 个 hunk | 原始 patch 仍在库；模型可能只看到部分 hunk。后续预算截断时保留首尾。 |
 | 证据预算 | 默认选中证据总内容不超过 24,000 字符；单条配置上限 6,000 字符；CI、diff、源码、飞书消息/文档、PR、commit 来源优先各留一个名额。之后以总预算约一半作为改动源码的优先覆盖额度，尽量让不同改动文件各有一个片段 | 这是**字符预算**，不是精确 Token 预算；单条首尾拼接会增加裁剪标记，总量仍由选择器限制。文件过多或其他证据占用较高时仍可能遗漏。手工来源参与后续统一排序。配置见 `CONTEXT_BUDGET_CHARS`、`CONTEXT_ITEM_MAX_CHARS`。 |
-| 历史检索 | 用标题、前 500 字描述、问题类型、最多 3 条故障行及相关代码路径/符号组成查询，最多约 1,800 字符；按仓库、问题类型过滤，默认 Top 5 | 已发布知识参与检索。历史案例用于启发，不替代当前证据。 |
+| 历史检索 | 用标题、前 500 字描述、问题类型、最多 3 条故障行及相关代码路径/符号组成查询，最多约 1,800 字符；按 repo_id、问题类型过滤，默认 Top 5；飞书无仓库事故用应用/群复合 repo_id | 已发布知识参与检索。历史案例用于启发，不替代当前证据；没有服务/环境级严格过滤或自动跨分区合并。 |
 | 标准工具补证 | REVIEW_TOOLS_ENABLED 默认开启（未配置/留空启用，0/false 关闭）；get_related_code / search_feishu_context / search_historical_cases，最多两轮决策/四次实际执行；共享 8,000 正文字符，单次 15 秒/700 输出 Token；同参数缓存只回送已返回 ID | 服务端固定事故/SHA/授权素材范围；代码与静态采集共用一次归档/索引；飞书只搜索当前已采集材料，历史仍非当前 Evidence；软期限不强制中断同步上游调用。 |
 | 生成输入 | 传入筛选后的 Evidence ID、来源、位置、正文、SHA 和选择原因；问题描述最多 2,000 字符；历史案例默认 5 条，`RAG_TOP_K` 最大 20，每条正文最多 1,500 字符 | 不把完整问题日志再次作为 `incident` 字段传入；日志经 Evidence 选择进入模型。模型实际输入还包含 JSON 字段和工具 Schema，**未实现整体精确 Token 预估或硬限额**。 |
 | 驳回后重新生成 | 从库中读取原始内容，对先前选中的证据再次执行选择器 | 保持本次生成的字符预算；若选择器代码或配置变化，重新生成时看到的片段可能改变。 |
@@ -83,6 +101,7 @@
 - 当前总预算按字符而非模型 Token 计量；历史案例、问题字段、JSON 包装及工具 Schema 没有统一的请求级硬限额。
 - 代码扩展是静态启发式，Python AST 与 JS/TS 解析能力不同；同名函数、动态分派、反射及跨服务调用可能产生误连或遗漏。归档超限或下载失败时会跳过代码扩展。
 - GitHub 的大文件或二进制变更可能没有 `patch`；CI 日志取证目前只针对关联 SHA 的一个失败 run，可能缺少最初复现时的运行记录。
+- 飞书命令只提供当前群窗口，不自动接通配置发布历史、监控、部署审计或其他服务；短窗口可能遗漏早期排查，较长窗口也可能混入无关讨论。服务/环境仅是填写线索，不能据此断言来源属于相同环境。
 - `QualityValidator` 检查引文存在与字段覆盖，不检查“引文是否真的支持该因果结论”；尚无基于真实历史问题的成功率或审核通过率测量。
 - [`map_reduce_summary.py`](../backend/src/repo_maintainer/map_reduce_summary.py) 是独立的长文本摘要模块，**未接入本复盘主链路**。不得将其写为当前已运行的压缩步骤。
 
@@ -116,6 +135,8 @@ generation_contexts 复用现有表，保存 tool_exploration、tool_model_respo
 **向量请求批量边界。** 查询、选中 Evidence 和发布知识均通过 `OpenAIEmbedder` 发出请求，每批最多 20 条，顺序执行并按批内返回 index 恢复输入顺序。缺失、重复或越界 index 会报错，避免文本与向量静默错配；空输入不发请求。该上限来自 2026-10-21 百炼真实联调的 400 响应；它不改变原文、上下文预算或存储维度，也不代表所有服务商的单段长度限制均已适配。
 
 **入库门槛。** `RetrospectiveDocument` 的完整结构化版本保存在 `retrospective_versions.document`（JSONB）。AI 草稿先经引用校验和人工审核；只有审核通过且发布到飞书 Wiki 的版本，才由 [`RetrospectivePipeline.publish()`](../backend/src/repo_maintainer/retrospective_pipeline.py) 建立知识条目。发布 URL、版本 ID、仓库和问题类型分别用于回查、版本定位和检索过滤。未审核的草稿不进入历史知识库。
+
+飞书命令入口沿用相同门槛与五类切片，未增加单独的聊天知识库。无仓库事故发布后保留 `feishu:{app_id}:{chat_id}` 的历史范围；原始触发、聊天陈述和最终人工确认结论分别保存在证据与审核版本中。后续检索命中该案例仍属于历史类比，不能成为新事故的原始证据。工具两轮/四次/8,000 正文字符、最终 24,000/单条 6,000 字符、片段约 1,200/重叠 100、RAG Top 5 均保持。
 
 | 层次 | 当前持久化内容 | 检索用途与事实边界 |
 | --- | --- | --- |
@@ -165,3 +186,5 @@ generation_contexts 复用现有表，保存 tool_exploration、tool_model_respo
 | 2026-10-27 | 将论证目标明确为“长上下文仍可能受干扰，因此应控制输入”，避免把通用阈值当作前置条件 | 复核 Classifier 与既有近期研究，更新研究说明、架构及本地链接；仅文档修订 | 控制的必要性不证明某个固定阈值最优；保留原始证据与关键行为链，未改代码、参数或部署 |
 | 2026-10-27 | 沉淀并在新分支实现三个标准只读 Tools、同快照会话、受控调用循环与证据轨迹 | 77 项针对性测试含隔离 PostgreSQL 通过；Mock/SDK 对象验证两轮回送、输入验证、预算/缓存、空/错/歧义、截断窗口、最终 selected、历史隔离及失败/重生兼容；[方案](standard-tools-upgrade.md) | 默认关闭，无新 HTTP/表/依赖；未真实验证百炼多轮工具协议、生产权限或业务效果；保留字符预算、同步上游超时、旧重试标记与跨服务取证限制 |
 | 2026-10-29 | 标准补证工具改为默认开启，并登记事故类型与当前来源边界 | 运行时/构造/环境模板/Compose 一致；75 项断网 Mock 测试通过、2 项数据库测试跳过；未配置/空值/显式关闭和旧规划互斥回归，配置与本地链接核对；[业务回顾](incident-business-scenarios.md) | 不扩展授权范围、工具预算或证据来源；无新连接器/表/模型；生产日志手工输入仍统一标为 ci_log，需核对实际来源；真实百炼多轮协议与运行部署未验证 |
+| 2026-10-29 | 新增飞书显式 @机器人复盘入口，让仅有群聊的无 PR 配置事故复用既有证据与审核链路 | 基线 2fd6e5b + 工作区；核对 listener/parser/bot/tasks/connectors/store；针对性断网 Mock 已通过，当前群、2h/72h 窗口、触发原文、排除自身消息、稳定 ID/执行锁/通知去重及群范围历史；同步架构、业务场景与[部署验收](feishu-bot-setup.md)，检查本地链接 | 新增 lark-oapi 1.7.5 与可选长连接进程，无新表/切片或预算调整；服务/环境只作线索；仍需人工审核发布；该阶段未部署或验证真实飞书/百炼；本轮最终实现由应用入口共享执行锁，直接调 Pipeline 不自动持锁；事务发件箱/跨服务取证未实现 |
+| 2026-10-30 | 完成共享事故锁、初次落库前连接错误重试及飞书入口本机部署核对，补记最新证据边界 | 基线 2fd6e5b + 工作区；151 项相关回归在新后端镜像/internal 隔离 PG 全过、无 skip（含 4 项 PG）；SDK/Celery 真实库 Mock 5 项通过；前端本机/镜像 build、Compose 与 228 个本地链接通过；API healthy/ready，飞书后台长连接成功、应用 1.0.3 已发布/通过；真实 @复盘帮助收到回复，任务 status=help/0.623 秒 | 当前引擎原无镜像/容器/卷，新库无旧演练数据，帮助后事故数仍 0；事件和既有权限已配置，无新增权限；本次真实建单/取证/模型生成未验收，不构成完整复盘闭环成功；无新表、切片或预算调整，人工审核及跨系统事务/跨服务取证限制保留 |

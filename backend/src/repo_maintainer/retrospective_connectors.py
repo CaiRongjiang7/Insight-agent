@@ -270,17 +270,41 @@ class FeishuConnector:
             "cache": cache,
         }
 
+    def bot_open_id(self) -> str:
+        response = self._api("GET", "/open-apis/bot/v3/info")
+        bot = response.get("bot")
+        open_id = bot.get("open_id") if isinstance(bot, dict) else None
+        if not isinstance(open_id, str) or not open_id.strip():
+            raise RuntimeError("Feishu bot info did not return bot.open_id")
+        return open_id
+
+    def reply_text(self, message_id: str, text: str, uuid: str) -> dict[str, Any]:
+        """Reply using the caller's stable UUID so transport retries are idempotent."""
+        return self._api(
+            "POST",
+            f"/open-apis/im/v1/messages/{quote(message_id, safe='')}/reply",
+            {"msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False), "uuid": uuid},
+        )
+
     def collect(self, incident: IncidentRecord) -> list[Evidence]:
         if not self.app_id or not self.app_secret:
             return []
         evidence: list[Evidence] = []
         start, end = _incident_time_window(incident)
+        bot_open_id = incident.metadata.get("feishu_bot_open_id")
+        trigger_message_id = incident.metadata.get("feishu_message_id")
         for chat_id in incident.feishu_chat_ids:
             for message in self._list_messages(chat_id, start, end):
+                message_id = str(message.get("message_id") or "")
+                if trigger_message_id and message_id == trigger_message_id:
+                    continue
+                sender = message.get("sender") or {}
+                own_app = sender.get("id_type") == "app_id" and sender.get("id") == self.app_id
+                if bot_open_id and (sender.get("id") == bot_open_id or own_app):
+                    continue
                 content = _feishu_message_text(message)
                 if not content:
                     continue
-                message_id = str(message.get("message_id") or "")
                 evidence.append(
                     Evidence(
                         incident_id=incident.id,
@@ -706,11 +730,28 @@ class OpenAIEmbedder:
 def _manual_incident_evidence(incident: IncidentRecord) -> list[Evidence]:
     evidence: list[Evidence] = []
     text = "\n\n".join(part for part in [incident.title, incident.description] if part)
-    if text:
+    if incident.source_type == "feishu_message":
+        trigger_text = incident.metadata.get("feishu_trigger_text")
+        message_id = str(incident.metadata.get("feishu_message_id") or "")
+        chat_id = str(incident.metadata.get("feishu_chat_id") or "")
+        if isinstance(trigger_text, str) and trigger_text:
+            evidence.append(
+                Evidence(
+                    incident_id=incident.id,
+                    source_type=EvidenceSource.FEISHU_MESSAGE,
+                    content=trigger_text,
+                    location=f"Feishu chat {chat_id} message {message_id}",
+                    source_url=f"feishu://message/{message_id}" if message_id else incident.source_url,
+                    repo_id=incident.repo_id,
+                    occurred_at=str(incident.metadata.get("occurred_at") or incident.created_at),
+                    metadata={"chat_id": chat_id, "message_id": message_id},
+                )
+            )
+    elif text:
         evidence.append(
             Evidence(
                 incident_id=incident.id,
-                source_type=EvidenceSource.MANUAL if incident.source_type == "manual" else EvidenceSource.GITHUB_PR,
+                source_type=EvidenceSource.GITHUB_PR if incident.source_type == "github_pr" else EvidenceSource.MANUAL,
                 content=text,
                 location=incident.source_url or f"incident {incident.id}",
                 source_url=incident.source_url,
@@ -762,6 +803,16 @@ def _read_log_archive(raw: bytes) -> str:
 
 
 def _incident_time_window(incident: IncidentRecord) -> tuple[int, int]:
+    if "feishu_window" in incident.metadata:
+        window = incident.metadata["feishu_window"]
+        if not isinstance(window, dict):
+            raise ValueError("feishu_window must contain integer start_time and end_time")
+        start, end = window.get("start_time"), window.get("end_time")
+        if type(start) is not int or type(end) is not int:
+            raise ValueError("feishu_window must contain integer start_time and end_time")
+        if not 0 < end - start <= 72 * 60 * 60:
+            raise ValueError("feishu_window must have start_time < end_time and span at most 72 hours")
+        return start, end
     center = datetime.now(timezone.utc)
     candidate = incident.metadata.get("occurred_at") or incident.metadata.get("merged_at")
     if candidate:

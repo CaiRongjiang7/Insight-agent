@@ -1,5 +1,11 @@
 # Docker 端到端闭环验收
 
+## 飞书 @入口的补充验收（2026-10-29）
+
+2026-10-30 验证：151 项相关测试全部通过（含隔离 PostgreSQL、真实 SDK 序列化和 Celery eager 重试）；本机服务及飞书订阅已部署，用户真实 @帮助命令收发成功。没有重跑既有完整 UI E2E；本次未真实调用百炼生成或发布 Wiki。
+
+既有 compose.e2e.yaml 不模拟飞书官方 WebSocket。新入口的断网测试使用官方事件形状、真实 Pipeline 与 Mock 外部边界，覆盖纯群聊 Tool、证据索引与 pending_review；前端链接通过构建检查。真实长连接、订阅权限、用户 @命令及群内回复须按[部署与验收说明](feishu-bot-setup.md)单独验证，不可用旧 E2E 冒充。
+
 本测试使用独立的 Compose 项目和数据卷，真实运行 Nginx、API、Celery、Redis、PostgreSQL/pgvector，只模拟 GitHub、飞书开放平台和 OpenAI 兼容接口。它不使用正式 `.env` 中的凭据，也不会写入正式数据库或真实飞书空间。
 
 ## 一键执行

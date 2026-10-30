@@ -5,10 +5,12 @@ from __future__ import annotations
 import math
 import hashlib
 import json
+from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
-from threading import RLock
-from typing import Any, Protocol
+from threading import Lock, RLock
+from typing import Any, ContextManager, Iterator, Protocol
+from _thread import LockType
 
 from .retrospective_models import (
     Evidence,
@@ -34,6 +36,7 @@ def record_generation_context(store, incident: IncidentRecord, purpose: str, req
 class RetrospectiveStore(Protocol):
     def initialize(self) -> None: ...
     def healthcheck(self) -> dict[str, Any]: ...
+    def execution_lock(self, incident_id: str) -> ContextManager[bool]: ...
     def register_source_event(self, delivery_id: str, event_type: str, payload: dict[str, Any]) -> bool: ...
     def create_incident(self, incident: IncidentRecord) -> IncidentRecord: ...
     def get_incident(self, incident_id: str) -> IncidentRecord: ...
@@ -77,6 +80,7 @@ class InMemoryRetrospectiveStore:
 
     def __init__(self, *, rrf_k: int = 60, channel_pool: int = 40) -> None:
         self._lock = RLock()
+        self._execution_locks: dict[str, LockType] = {}
         self.rrf_k = max(1, rrf_k)
         self.channel_pool = max(1, channel_pool)
         self._source_events: set[str] = set()
@@ -95,6 +99,18 @@ class InMemoryRetrospectiveStore:
 
     def healthcheck(self) -> dict[str, Any]:
         return {"configured": True, "ready": True, "type": "memory", "vector": False}
+
+    @contextmanager
+    def execution_lock(self, incident_id: str) -> Iterator[bool]:
+        """Allow one execution per incident without blocking duplicate deliveries."""
+        with self._lock:
+            lock = self._execution_locks.setdefault(incident_id, Lock())
+        acquired = lock.acquire(blocking=False)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                lock.release()
 
     def register_source_event(self, delivery_id: str, event_type: str, payload: dict[str, Any]) -> bool:
         del event_type, payload
@@ -349,6 +365,23 @@ class PostgresRetrospectiveStore:
 
     def _connect(self):
         return self._psycopg.connect(self.database_url, row_factory=self._dict_row)
+
+    @contextmanager
+    def execution_lock(self, incident_id: str) -> Iterator[bool]:
+        """Hold a session lock on a dedicated connection, never a long transaction."""
+        digest = hashlib.sha256(f"retrospective-execution:{incident_id}".encode("utf-8")).digest()
+        lock_key = int.from_bytes(digest[:8], byteorder="big", signed=True)
+        with self._connect() as connection:
+            connection.autocommit = True
+            row = connection.execute(
+                "SELECT pg_try_advisory_lock(%s) AS acquired", (lock_key,)
+            ).fetchone()
+            acquired = bool(row and row["acquired"])
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    connection.execute("SELECT pg_advisory_unlock(%s)", (lock_key,))
 
     def save_generation_context(self, context: GenerationContext) -> None:
         with self._connect() as connection:

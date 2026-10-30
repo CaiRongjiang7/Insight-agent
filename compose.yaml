@@ -96,6 +96,7 @@ services:
     image: insight-review-backend:latest
     command: ["celery", "-A", "repo_maintainer.retrospective_tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
     environment:
+      REVIEW_PUBLIC_BASE_URL: ${REVIEW_PUBLIC_BASE_URL:-}
       REVIEW_PIPELINE_ENABLED: "1"
       TASK_QUEUE_MODE: celery
       DATABASE_URL: postgresql://${POSTGRES_USER:-review_agent}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-review_agent}
@@ -134,6 +135,23 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+
+  feishu-bot:
+    profiles: ["feishu-bot"]
+    image: insight-review-backend:latest
+    command: ["python", "-m", "repo_maintainer.retrospective_feishu_listener"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      FEISHU_BASE_URL: ${FEISHU_BASE_URL:-https://open.feishu.cn}
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      FEISHU_CHAT_IDS: ${FEISHU_CHAT_IDS:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    restart: unless-stopped
 
   frontend:
     build:

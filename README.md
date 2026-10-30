@@ -1,6 +1,6 @@
 # 研发问题复盘 Agent（小组/部门核心版）
 
-面向合并 PR 和手工问题的证据化复盘工作流：自动汇聚 GitHub、飞书和历史知识上下文，生成带原文引用的结构化复盘，经人工审核后发布到飞书 Wiki，并回流 PostgreSQL/pgvector 供后续问题召回。
+面向合并 PR、手工问题和飞书群 @机器人命令的证据化复盘工作流：自动汇聚 GitHub、飞书和历史知识上下文，生成带原文引用的结构化复盘，经人工审核后发布到飞书 Wiki，并回流 PostgreSQL/pgvector 供后续问题召回。
 
 ## 界面预览
 
@@ -33,6 +33,10 @@
 ![手工创建问题表单局部：标题、仓库、问题类型、描述与日志](docs/images/retrospective-create.jpg)
 
 ## 当前实现与演练记录
+
+2026-10-29 新增飞书显式触发入口：配置群内发送 `@机器人 复盘 <标题>`，可附服务、环境和时间。官方 SDK 长连接接收，不需要公网入口；Worker 异步生成、回复状态，最终仍需人工审核。默认仅取当前群前 2 小时，最长 72 小时；无需 PR，消息级去重并共享执行锁。可选 `feishu-bot` Compose profile 启动，新增 SDK 依赖与可选 `REVIEW_PUBLIC_BASE_URL`。权限、订阅、部署及验收见[飞书入口说明](docs/feishu-bot-setup.md)；工作区实现与真实平台联通分别验收。
+
+2026-10-30：151 项相关回归（含隔离 PostgreSQL）全部通过，前端构建通过。本机服务和 Listener 已部署，飞书长连接验证成功、消息订阅版本 1.0.3 已发布；用户真实 @“复盘帮助”收到回复。完整生成目前通过 Mock 集成验证，本次没有真实调用百炼生成或发布 Wiki。
 
 2026-10-27 在 `codex/standard-tools-upgrade` 分支实现标准只读取证 Tools：`get_related_code`、`search_feishu_context`、`search_historical_cases`。通过 JSON Schema / Function Calling 请求、校验执行和 call_id 结果回传形成最多两轮/累计四次执行的补证循环；共享 8,000 字符工具正文预算，最终仍受既有证据预算和原文引用校验。统一缓存避免重复查询/重复正文，模型与工具轨迹存入现有 generation_contexts。方案、契约和测试入口见[标准 Tool 升级方案](docs/standard-tools-upgrade.md)。
 
