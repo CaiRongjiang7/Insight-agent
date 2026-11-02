@@ -42,10 +42,9 @@
             <div class="actions">
               <el-button v-if="detail.incident.status === 'received'" type="primary" @click="run">运行链路</el-button>
               <el-button v-if="detail.incident.status === 'failed'" type="warning" @click="retry">重试</el-button>
-              <el-button v-if="detail.incident.status === 'rejected'" type="warning" @click="regenerate">重新生成</el-button>
-              <el-button v-if="detail.incident.status === 'pending_review'" type="success" @click="approve">通过</el-button>
+              <el-button v-if="detail.incident.status === 'pending_review'" type="success" @click="approve">审核通过</el-button>
               <el-button v-if="detail.incident.status === 'pending_review'" type="danger" @click="reject">驳回</el-button>
-              <el-button v-if="detail.incident.status === 'approved'" type="primary" @click="publish">发布飞书 Wiki</el-button>
+              <el-button v-if="detail.incident.status === 'approved'" type="primary" @click="publish">发布并写入知识库</el-button>
             </div>
           </div>
 
@@ -56,6 +55,11 @@
           </el-descriptions>
           <el-alert v-if="detail.incident.error" :title="detail.incident.error" type="error" show-icon :closable="false" />
           <el-alert v-if="detail.incident.metadata?.code_context_warning" :title="`源码上下文未获取：${detail.incident.metadata.code_context_warning}`" type="warning" show-icon :closable="false" />
+          <el-alert v-if="detail.incident.metadata?.review_notification_error" :title="detail.incident.metadata.review_notification_error" type="warning" show-icon :closable="false">
+            <el-button v-if="detail.incident.status === 'pending_review'" text @click="retryNotification">重试审核通知</el-button>
+          </el-alert>
+          <el-alert v-if="revisionActive" title="Agent 正在根据审核意见重新采集、核对证据并修订，完成后仍需人工审核。" type="info" :closable="false" />
+          <el-alert v-else-if="['pending_review', 'rejected'].includes(detail.incident.status)" title="当前为待审核草稿，尚未写入历史知识库。可以直接编辑保存，或提交意见交给 Agent 修订。" type="info" :closable="false" />
 
           <el-tabs v-model="activeTab">
             <el-tab-pane label="复盘材料" name="document">
@@ -64,8 +68,14 @@
                   <el-progress :percentage="Math.round(detail.retrospective.quality.score * 100)" :stroke-width="10" />
                   <el-tag v-for="warning in detail.retrospective.quality.soft_warnings" :key="warning" type="warning">{{ warning }}</el-tag>
                 </div>
+                <el-alert :title="detail.retrospective.document.impact.coverage_notes || '现有材料未证明影响范围完整；未提及不代表未受影响。'" type="info" :closable="false" />
+                <article v-for="(candidate, index) in detail.retrospective.document.impact.potential_impacts || []" :key="index" class="citation-card">
+                  <el-tag type="warning">待验证影响</el-tag>
+                  <p>{{ candidate.content }}</p>
+                  <small>需补充验证：{{ candidate.verification_needed }}</small>
+                </article>
                 <div class="review-split">
-                  <el-input v-model="documentJson" type="textarea" :rows="24" spellcheck="false" />
+                  <el-input v-model="documentJson" type="textarea" :rows="24" spellcheck="false" :readonly="revisionActive || !['pending_review', 'rejected'].includes(detail.incident.status)" />
                   <div class="citation-panel">
                     <h3>核心结论引用核对</h3>
                     <el-empty v-if="!citationRows.length" description="暂无引用" />
@@ -80,8 +90,15 @@
                 <el-button
                   v-if="['pending_review', 'rejected'].includes(detail.incident.status)"
                   class="save-button"
+                  :disabled="revisionActive"
                   @click="saveDocument"
                 >保存人工版本</el-button>
+                <div v-if="['pending_review', 'rejected'].includes(detail.incident.status)" class="review-feedback">
+                  <h3>审核意见</h3>
+                  <el-input v-model="reviewFeedback" type="textarea" :rows="4" :maxlength="4000" show-word-limit :disabled="revisionActive"
+                    placeholder="说明需要修正的结论或引用，例如：根因引用了错误版本，请重新搜索该 SHA 的源码并核对原文与结论是否一致。" />
+                  <el-button class="save-button" type="warning" :loading="revisionSubmitting || revisionActive" @click="revise">提交意见并交给 Agent 修订</el-button>
+                </div>
               </template>
               <el-empty v-else description="尚未生成复盘" />
             </el-tab-pane>
@@ -97,6 +114,13 @@
               <el-timeline>
                 <el-timeline-item v-for="item in detail.versions" :key="item.id" :timestamp="item.created_at">
                   v{{ item.version }} · {{ item.kind }} · {{ item.actor }} · 质量 {{ Math.round(item.quality.score * 100) }}%
+                </el-timeline-item>
+              </el-timeline>
+            </el-tab-pane>
+            <el-tab-pane label="审核记录" name="reviews">
+              <el-timeline>
+                <el-timeline-item v-for="item in detail.review_actions" :key="String(item.id)" :timestamp="String(item.created_at)">
+                  {{ item.actor }} · {{ item.action }}<p>{{ item.reason }}</p>
                 </el-timeline-item>
               </el-timeline>
             </el-tab-pane>
@@ -121,7 +145,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { retrospectiveApi, type CoreDetail, type CoreDocument, type CoreIncident, type CoreStatus } from "@/api/retrospective";
@@ -134,6 +158,11 @@ const connectorStatus = ref<Record<string, any>>({ ready: false });
 const activeTab = ref("document");
 const documentJson = ref("");
 const createVisible = ref(false);
+const reviewFeedback = ref("");
+const revisionSubmitting = ref(false);
+const waitingForRun = ref(false);
+const revisionActive = computed(() => ['queued', 'running'].includes(detail.value?.incident.metadata?.revision_job_status || ''));
+const hasUnsavedEdits = computed(() => !!detail.value?.retrospective && documentJson.value !== JSON.stringify(detail.value.retrospective.document, null, 2));
 const form = reactive({ title: "", repo_name: "", incident_type: "unknown", description: "", logs: "", chat_ids: "", doc_tokens: "" });
 const citationRows = computed(() => {
   const document = detail.value?.retrospective?.document;
@@ -141,6 +170,8 @@ const citationRows = computed(() => {
   const evidence = new Map(detail.value.evidence.map((item) => [item.id, item]));
   return [
     ...document.impact.citations.map((citation) => ({ section: "影响", citation })),
+    ...(document.impact.potential_impacts || []).flatMap((candidate, index) =>
+      candidate.citations.map((citation) => ({ section: `待验证影响 ${index + 1}`, citation }))),
     ...document.root_cause.citations.map((citation) => ({ section: "根因", citation })),
     ...document.fix_solution.citations.map((citation) => ({ section: "修复", citation })),
   ].map((row) => ({ ...row, evidence: evidence.get(row.citation.evidence_id) }));
@@ -161,8 +192,10 @@ async function load() {
   } catch (error) { ElMessage.error(String(error)); }
 }
 async function select(id: string) {
+  const changed = selectedId.value !== id;
   selectedId.value = id;
   detail.value = await retrospectiveApi.detail(id);
+  if (changed) reviewFeedback.value = "";
   documentJson.value = detail.value.retrospective ? JSON.stringify(detail.value.retrospective.document, null, 2) : "";
 }
 async function create() {
@@ -176,19 +209,37 @@ async function create() {
   await load();
   await select(incident.id);
 }
-async function run() { await retrospectiveApi.run(selectedId.value); ElMessage.success("任务已提交"); await load(); }
+async function run() { await retrospectiveApi.run(selectedId.value); waitingForRun.value = true; ElMessage.success("任务已提交"); await load(); }
 async function retry() { await retrospectiveApi.retry(selectedId.value); ElMessage.success("重试完成"); await load(); }
-async function regenerate() { await retrospectiveApi.regenerate(selectedId.value); ElMessage.success("已基于原证据重新生成"); await load(); }
-async function approve() { await retrospectiveApi.approve(selectedId.value, "admin"); await load(); }
+async function revise() {
+  if (!reviewFeedback.value.trim()) return ElMessage.warning("请填写审核意见，说明需要修正的结论或引用");
+  if (hasUnsavedEdits.value) return ElMessage.warning("请先保存人工修改，再提交审核意见");
+  if (!detail.value?.retrospective) return;
+  revisionSubmitting.value = true;
+  try {
+    await retrospectiveApi.revise(selectedId.value, "admin", reviewFeedback.value, detail.value.retrospective.id);
+    ElMessage.success("已提交 Agent 修订，完成后请重新审核"); reviewFeedback.value = ""; await load();
+  } catch (error) { ElMessage.error(String(error)); await load(); }
+  finally { revisionSubmitting.value = false; }
+}
+async function retryNotification() {
+  try { await retrospectiveApi.notifyReview(selectedId.value); ElMessage.success("审核通知已处理"); await load(); }
+  catch (error) { ElMessage.error(String(error)); }
+}
+async function approve() {
+  if (hasUnsavedEdits.value) return ElMessage.warning("请先保存人工修改，再审核通过当前版本");
+  try { await retrospectiveApi.approve(selectedId.value, "admin", "", detail.value?.retrospective?.id); await load(); }
+  catch (error) { ElMessage.error(String(error)); }
+}
 async function reject() {
   const { value } = await ElMessageBox.prompt("请输入驳回原因", "驳回复盘", { inputType: "textarea" });
-  await retrospectiveApi.reject(selectedId.value, "admin", value); await load();
+  await retrospectiveApi.reject(selectedId.value, "admin", value, detail.value?.retrospective?.id); await load();
 }
-async function publish() { const result = await retrospectiveApi.publish(selectedId.value, "admin"); ElMessage.success(`已发布：${result.publication.url}`); await load(); }
+async function publish() { const result = await retrospectiveApi.publish(selectedId.value, "admin", detail.value?.retrospective?.id); ElMessage.success(`已发布：${result.publication.url}`); await load(); }
 async function saveDocument() {
   try {
     const document = JSON.parse(documentJson.value) as CoreDocument;
-    await retrospectiveApi.edit(selectedId.value, "admin", document);
+    await retrospectiveApi.edit(selectedId.value, "admin", document, detail.value?.retrospective?.id);
     ElMessage.success("人工版本已保存"); await load();
   } catch (error) { ElMessage.error(`保存失败：${String(error)}`); }
 }
@@ -198,7 +249,18 @@ function linkedIncident() {
   return typeof value === "string" ? value : "";
 }
 onMounted(() => { selectedId.value = linkedIncident(); return load(); });
-watch(() => route.query.incident_id, () => { selectedId.value = linkedIncident(); void load(); });
+watch(() => route.query.incident_id, () => { reviewFeedback.value = ""; selectedId.value = linkedIncident(); void load(); });
+let polling = false;
+const pollTimer = window.setInterval(async () => {
+  const status = detail.value?.incident.status;
+  if (polling || !selectedId.value || hasUnsavedEdits.value || !(revisionActive.value || waitingForRun.value || ['collecting', 'retrieving', 'generating', 'validating'].includes(status || ''))) return;
+  polling = true;
+  try {
+    await load();
+    if (['pending_review', 'failed', 'approved', 'published'].includes(detail.value?.incident.status || '')) waitingForRun.value = false;
+  } finally { polling = false; }
+}, 5000);
+onUnmounted(() => window.clearInterval(pollTimer));
 </script>
 
 <style scoped>

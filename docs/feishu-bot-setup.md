@@ -1,6 +1,14 @@
 # 飞书 @机器人启动智能复盘
 
+最新部署补记（2026-11-01）：API/Worker/Listener为926f61c12dca，显式deepseek、百炼deepseek-v4.1-flash-1017、1M与原生压缩，thinking=false；当前REVIEW_PUBLIC_BASE_URL为`http://10.160.226.172`。本轮仅合成材料，不采集真实群聊、不发消息、不批准/发布；没有重测真实用户@命令。下文builtin/v4/旧地址为此前记录。[最新模型与部署验收](validation/long-context-live-2026-11-01.md)。
+
 2026-10-29 开始实现，2026-10-30 完成核对，基于 `2fd6e5b` + 工作区。组件关系见[架构](architecture.md)，证据边界见[台账](evidence-context-ledger.md)。
+
+## 2026-11-01 审核闭环部署核对
+
+已更新本机 API、Worker、前端和 Listener；真实合成事故完成 AI v1、网页编辑 v2、意见驱动重取证/只读工具与真实模型修订 v3、网页来源属性校对 v4。飞书 img-analysis 群的 v1/v3 两条提醒已真实回读，用户确认局域网链接可打开。网址 `http://10.162.7.238`，API/Worker 实配 REVIEW_PUBLIC_BASE_URL 相同；因首次补证超时，使用已有 OPENAI_ENABLE_THINKING=false，保持 builtin 和原预算。
+
+本次最终仍为 pending_review，publications/knowledge_entries 均为 0，没有代替人工批准或发布。Listener 已重启，未额外宣称新真实用户 @命令已验收。部署镜像 90 项相关回归通过；详情、备份与限制见[真实联调记录](validation/review-loop-live-2026-11-01.md)。IP 变化后需更新地址配置和 API/Worker。
 
 ## 使用方式
 
@@ -58,7 +66,7 @@
 
 ## 部署
 
-在 `.env` 配置现有 Feishu 凭据和 `FEISHU_CHAT_IDS`。可选 `REVIEW_PUBLIC_BASE_URL=https://review.example.com`，不含 `/retrospective`；留空只回复事故 ID。管理台沿用现有访问控制，链接配置不增加鉴权。
+在 `.env` 配置现有 Feishu 凭据和 `FEISHU_CHAT_IDS`。审核通知必须配置 `REVIEW_PUBLIC_BASE_URL=https://review.example.com`，不含 `/retrospective`，且 API/Worker 使用相同值；地址必须可被审核人访问。缺少地址时草稿仍保留，页面显示配置错误，待审核通知不发送；受理/失败回复仍可按事故 ID 定位。管理台沿用现有访问控制，链接配置不增加鉴权。
 
 ```powershell
 docker compose build api frontend
@@ -68,7 +76,7 @@ docker compose --profile feishu-bot up -d feishu-bot
 docker compose logs --tail 50 feishu-bot
 ```
 
-新增 `lark-oapi==1.7.5`。可选 `feishu-bot` 服务复用后端镜像，无端口映射；仅需出站 HTTPS/WSS，不需公网 IP、域名或隧道接收事件。Worker 必须同步更新。无新表；旧部署仍须有此前的 generation_contexts 等表。停止监听：`docker compose --profile feishu-bot stop feishu-bot`。
+新增 `lark-oapi==1.7.5`。可选 `feishu-bot` 服务复用后端镜像，无端口映射；仅需出站 HTTPS/WSS，不需公网 IP、域名或隧道接收事件。API、Worker 与前端必须同步更新（包含新增修订和通知任务）。无新表；旧部署仍须有此前的 generation_contexts 等表。停止监听：`docker compose --profile feishu-bot stop feishu-bot`。
 
 非 Docker 开发：安装 backend 声明依赖，配置环境变量，运行 `python -m repo_maintainer.retrospective_feishu_listener`；需已有 Redis、Worker、数据库。SDK 阻塞 start 在独立进程运行。日志设 WARNING，避免 INFO 打印带鉴权参数的连接 URL；不要开启 DEBUG 收集原始群消息。
 
@@ -80,7 +88,7 @@ SDK WebSocket 不保证继承系统代理，7897 HTTP 代理不代表长连接�
 
 应用、群、message_id 决定事故 ID；event_id 改变也不重复创建。PostgreSQL 独立 autocommit 会话 advisory lock 排除并发；内存测试用线程 Lock。工作台生成、编辑、审核、发布与 Worker 共享锁。飞书任务进程被杀允许重投；拿到锁后发现中间状态则标记中断失败，转工作台核对后重试。
 
-回复使用稳定 UUID（平台仅 1 小时去重）和 metadata 已发送标记。完成回复失败不重生成；受理回复失败仍继续。发送成功后写标记失败、且重试超过平台去重期，仍可能重复回复。通知、锁冲突和暂时数据库连接错误最多 5 次重试，退避最多 60 秒；业务失败不因重复消息自动重跑。无周期补偿扫描或群内状态命令。
+受理/失败回复使用稳定 UUID（平台仅 1 小时去重）和 metadata 已发送标记。新 AI 待审核版本由统一 ReviewNotifier 主动发群消息（PR/手工入口也覆盖），飞书事故仅发原群；消息包含网页深链、版本及审核说明。成功按版本/群记录，失败由独立 Celery 通知任务重试，不重生成；受理回复失败仍继续。发送成功后写标记失败、且重试超过平台去重期，仍可能重复回复。通知、锁冲突和暂时数据库连接错误最多 5 次重试，退避最多 60 秒；业务失败不因重复消息自动重跑。无周期补偿扫描或群内状态命令；页面提供通知重试。未增加群内“审核/修改”命令，审核意见在网页提交，Agent 重新取证修订后仍需人工通过与发布。
 
 不继承全局文档/其他群。历史按 `feishu:<app_id>:<chat_id>` 的 repo_id 隔离；服务/环境仅为元数据，不是独立检索过滤，因此同群不同服务的历史可能作为候选。保持参与者陈述、静态推断、人工确认的区别。
 
@@ -94,6 +102,8 @@ python -m unittest test_feishu_commands test_feishu_connector test_feishu_bot te
 
 覆盖真正 @、窗口、来源、自回复排除、入队失败、重复消息、并发、无 PR 生成及通知重试。TEST_CONTEXT_DATABASE_URL 仅用独立临时库；跳过不代表数据库已验证。前端运行 npm run build。
 
+新增审核闭环须逐项验收：PR/手工/飞书任务完成后群里出现一次含当前事故链接的待审核通知；链接打开正确事故；直接保存人工版本；提交具体引用错误意见，Worker 重新取证/调用只读工具并产生新待审核版本和新提醒；审核意见可回查且不是 Evidence；未通过前历史案例检索无该案例，审核通过并发布后可召回；通知失败重试不重生成，陈旧页面审核/编辑返回版本冲突。未进行该真实验收前不能将 Mock 测试当作上线成功。
+
 真实验收由群内用户先发“复盘帮助”，再发有材料的复盘命令，核对事故唯一、取证范围、引用、pending_review 和链接。完成回复不代表已发布 Wiki。部署和真实平台状态以交付记录为准，Mock 测试不能替代联调。
 
 2026-10-30 交付核对：151 项相关测试在新后端镜像和仅连接隔离 PostgreSQL 的内部网络中全部通过，无跳过；包含 4 项数据库用例、5 项官方 SDK/Celery 兼容与重试用例。前端在本机和镜像构建通过，Compose 配置与本地文档链接检查通过。
@@ -103,3 +113,5 @@ python -m unittest test_feishu_commands test_feishu_connector test_feishu_bot te
 依据：[SDK 版本](https://pypi.org/project/lark-oapi/1.7.5/)、[SDK 长连接](https://github.com/larksuite/oapi-sdk-python/blob/v2_main/lark_oapi/ws/client.py)、[事件机制](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/event-subscription-guide/event-subscriptions)、[回复消息](https://open.feishu.cn/document/server-docs/im-v1/message/reply)。
 
 2026-10-30 默认窗口后续更新：新命令默认前 24 小时；55 项相关 Mock 测试在本机与新后端镜像断网通过。已更新 API、Worker 和 Listener，运行容器读回默认值均为 24 小时且帮助文案一致；前端/API ready。本次未重跑真实 @命令、模型或 Wiki。更新中旧 Listener 未及时响应停止，确认无事故后终止旧进程完成替换，未增加优雅退出实现。既有事故窗口不回写。
+
+2026-10-31 审核闭环工作区升级：统一群通知、页面意见异步修订/重新调查、可选 version_id 并发核对和审核入库复查已实现；本轮离线验证见[架构验证记录](architecture.md#10-验证证据与当前待解决项)。未更新本机运行服务、发送真实群消息或调用云端模型，不覆盖上方历史部署记录。依据：[官方发送消息接口](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[消息文本与超链接结构](https://open.feishu.cn/document/server-docs/im-v1/message-content-description/create_json?lang=zh-CN)。

@@ -1,0 +1,219 @@
+{
+  "date": "2026-11-01",
+  "timezone": "Asia/Shanghai",
+  "branch": "codex/deepseek-harness-upgrade",
+  "baseline": "3af8ea8 + working tree",
+  "actual_backend_image": "sha256:926f61c12dcaf70464bfd52c91e0388b8b8ba99aa5ea4a68500633628bd5b7d2",
+  "rollback_image": "sha256:f6d6e16cd93fa1ac598fd2b6ef910e3d92fb6d822b125afff6cf2b7aba3ea948",
+  "rollback_tag": "insight-review-backend:rollback-long-context-20261101",
+  "configuration_and_source_verification": {
+    "timestamp_utc": "2026-11-01T11:12:55.784275+00:00",
+    "harness": {
+      "model": "deepseek-v4.1-flash-1017",
+      "root": "/app/runtime/harness",
+      "api": "openai-completions",
+      "timeout_seconds": 600.0,
+      "model_timeout_seconds": 120.0,
+      "max_rounds": 40,
+      "max_calls": 80,
+      "tool_output_chars": 600000,
+      "tool_item_chars": 12000,
+      "initial_context_chars": 160000,
+      "initial_item_chars": 24000,
+      "request_max_bytes": 16000000,
+      "max_output_tokens": 4096,
+      "context_tokens": 1000000,
+      "enable_thinking": false,
+      "compaction_enabled": true,
+      "compaction_max_requests": 4,
+      "compaction_max_tokens": 16384,
+      "compaction_threshold": 0.8,
+      "compaction_headroom": 32768
+    },
+    "endpoint_host": "dashscope.aliyuncs.com",
+    "writer_model": "deepseek-v4.1-flash-1017",
+    "selector": {
+      "budget_chars": 600000,
+      "max_item_chars": 60000
+    },
+    "code_context": {
+      "max_expanded_files": 120,
+      "max_regions_per_file": 4,
+      "max_snippet_chars": 12000
+    },
+    "embedding_model": "qwen3.7-text-embedding-flash",
+    "actual_writer_evidence_chars": 43886,
+    "writer_saw_long_source_end": true,
+    "source_sha256": {
+      "retrospective_harness_state": "e0780da97f559dc0b9926905b8a1cd48e23d08951e49496f25da78e6bd67f0cd",
+      "retrospective_harness_trace": "00f647502627ace6f55afe6ad3892364336c4e4a187923842c815ac6a15e1a3e",
+      "retrospective_mcp": "92815d8822f982a522eb14bced1596fb1ac1314705022dc7eb04604501bd2ff8",
+      "retrospective_compaction": "d802c2a428979bab4d39a03956f5932d0d59372ca12722d485401b287a4d7c2e",
+      "deepseek_runner": "7ac353838845f3b027a2b0accf00dfa8b3cc721c183eacad15d3ac0e5a13fd92",
+      "investigation_runner": "a98fe30d1e1abba6c248c0c562039d80d43915874927eda02e316cc3fe50da74",
+      "retrospective_runtime": "0c7e084176deac74f8a2d4d0378d985948c271265c39bbe1881753ce018c8c9d",
+      "retrospective_pipeline": "250c79b24808d676ba2137a4724fc2099080cd31de5ae288677d9364c72a5245",
+      "retrospective_tools": "c31fd8bea3976837f279ef84ad1f72ba3b2d6e1e7cd3f1ac0b263387dfa94844",
+      "retrospective_connectors": "dde26d95b619e52c6488c9a91b2221fc26c5b6e6253ee1e458ec873288bfa59a"
+    },
+    "worker_ping": true,
+    "public_base_url": "http://10.160.226.172"
+  },
+  "compatibility_probe": {
+    "synthetic": true,
+    "model": "deepseek-v4.1-flash-1017",
+    "endpoint_host": "dashscope.aliyuncs.com",
+    "chat_passed": true,
+    "chat_reported_total_tokens": 14,
+    "responses_function_passed": true,
+    "responses_reported_total_tokens": 332
+  },
+  "candidate_pressure": {
+    "timestamp_utc": "2026-11-01T11:08:59.650616+00:00",
+    "passed": true,
+    "model": "deepseek-v4.1-flash-1017",
+    "endpoint_host": "dashscope.aliyuncs.com",
+    "duration_seconds": 37.658,
+    "run_id": "toolrun_a8f062244f254acabd6ebef57dd7b95b",
+    "exploration_requests": 12,
+    "compaction_requests": 1,
+    "tool_calls": 11,
+    "runtime_events": 76,
+    "stop_reason": "no_tool_calls",
+    "tool_output_chars": 96171,
+    "max_request_bytes": 373949,
+    "max_reported_prompt_tokens": 77265,
+    "reported_total_tokens": 602995,
+    "summary_output_tokens": [
+      3574
+    ],
+    "compaction_errors": 0,
+    "compaction_events": [
+      "compaction/start",
+      "compaction/summary",
+      "compaction/end"
+    ],
+    "original_evidence_count": 33,
+    "raw_evidence_preserved": true,
+    "added_evidence_count": 1,
+    "stress_overrides": {
+      "context_tokens": 96000,
+      "compaction_headroom": 4096,
+      "initial_context_chars": 24000,
+      "initial_item_chars": 1000
+    },
+    "configured_production_capacity": 1000000,
+    "million_token_request_tested": false,
+    "material_scope": "synthetic collected statements and local synthetic repository only; no business DB or external chat access"
+  },
+  "deployed_pressure": {
+    "timestamp_utc": "2026-11-01T11:11:39.556624+00:00",
+    "passed": true,
+    "model": "deepseek-v4.1-flash-1017",
+    "endpoint_host": "dashscope.aliyuncs.com",
+    "duration_seconds": 38.014,
+    "run_id": "toolrun_7728d1d36610437eba879ac3ab69ab2b",
+    "exploration_requests": 12,
+    "compaction_requests": 1,
+    "tool_calls": 11,
+    "runtime_events": 76,
+    "stop_reason": "no_tool_calls",
+    "tool_output_chars": 96171,
+    "max_request_bytes": 374243,
+    "max_reported_prompt_tokens": 77386,
+    "reported_total_tokens": 603322,
+    "summary_output_tokens": [
+      3374
+    ],
+    "compaction_errors": 0,
+    "compaction_events": [
+      "compaction/start",
+      "compaction/summary",
+      "compaction/end"
+    ],
+    "original_evidence_count": 33,
+    "raw_evidence_preserved": true,
+    "added_evidence_count": 1,
+    "stress_overrides": {
+      "context_tokens": 96000,
+      "compaction_headroom": 4096,
+      "initial_context_chars": 24000,
+      "initial_item_chars": 1000
+    },
+    "configured_production_capacity": 1000000,
+    "million_token_request_tested": false,
+    "material_scope": "synthetic collected statements and local synthetic repository only; no business DB or external chat access"
+  },
+  "business": {
+    "timestamp_utc": "2026-11-01T11:11:26.674081+00:00",
+    "passed": true,
+    "incident_id": "inc_95ab966641d74b759bcf08f6bb5dfb10",
+    "job_id": "5679e406-2c9e-4dbd-bc01-84cd4fbb23dc",
+    "duration_seconds": 23.123,
+    "state": "pending_review",
+    "version_id": "retro_a7daad4c9aa040d5860adc4524d0b1c9",
+    "version": 1,
+    "prompt_version": "v6-human-review-feedback",
+    "writer_model": "deepseek-v4.1-flash-1017",
+    "writer_input_tokens": 13484,
+    "writer_output_tokens": 1894,
+    "evidence_count": 2,
+    "quality_hard_errors": [],
+    "guards": {
+      "invalid_quote": 409,
+      "stale_approval": 409,
+      "unapproved_publication": 409
+    },
+    "business_counts_before": {
+      "publications": 0,
+      "knowledge_entries": 0
+    },
+    "business_counts_after": {
+      "publications": 0,
+      "knowledge_entries": 0
+    },
+    "notifications_sent": 0,
+    "review_url": "http://10.160.226.172/retrospective?incident_id=inc_95ab966641d74b759bcf08f6bb5dfb10",
+    "scope": "synthetic manual/log evidence; actual deployed Nginx/API/Celery/PG/DSH/Bailian writer and embedding; no real chat fetch, notification, approval or publication"
+  },
+  "regression": {
+    "passed": 275,
+    "skipped": 0,
+    "warnings": 2,
+    "duration_seconds": 60.44,
+    "sdk_mcp_cases": 20,
+    "image": "insight-review-long-context-test:20261101",
+    "test_source_mount": false,
+    "isolated_postgres": true
+  },
+  "failures_and_corrections": [
+    {
+      "phase": "host_launcher",
+      "model_requests": 0,
+      "issue": "Windows PowerShell refused unsigned local test script",
+      "resolution": "Run the reviewed script with process-local execution policy; system policy unchanged"
+    }
+  ],
+  "limitations": [
+    "No near-million-token request; native pressure tests override capacity to 96000 while deployed settings stay 1000000",
+    "Synthetic compatibility and operation only; no production incident quality/cost ablation or semantic faithfulness proof",
+    "Character limits and native meter are not an exact end-to-end token/cost hard limit",
+    "No real chat collection, notification, human approval/publication, knowledge insertion or new real @command test",
+    "No new cross-restart recovery, multi-agent runtime, cross-repository retrieval or runtime topology collection"
+  ],
+  "final_checks": {
+    "markdown_files": 29,
+    "local_markdown_links": 377,
+    "invalid_local_links": 0,
+    "git_diff_check": true,
+    "compose_config_quiet": true,
+    "host_review_page_http": 200,
+    "host_health_http": 200,
+    "api_postgres_redis_healthy": true,
+    "worker_ping": true,
+    "frontend_listener_running": true,
+    "test_postgres_and_network_removed": true,
+    "rollback_config_database_and_image_preserved": true,
+    "raw_snapshots_and_credentials_gitignored": true
+  }
+}

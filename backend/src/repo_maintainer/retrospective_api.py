@@ -8,21 +8,34 @@ from contextlib import contextmanager
 from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from .retrospective_models import IncidentCreate, IncidentStatus, RetrospectiveDocument
+from .retrospective_models import IncidentCreate, IncidentStatus, RetrospectiveDocument, ReviewAction
 from .retrospective_pipeline import PipelineError, RetrospectivePipeline
 
 
 class ReviewCommand(BaseModel):
     actor: str = "reviewer"
     reason: str = ""
+    version_id: str | None = None
+
+
+class RevisionCommand(ReviewCommand):
+    reason: str = Field(min_length=1, max_length=4_000)
+    version_id: str
 
 
 class EditCommand(BaseModel):
     actor: str = "reviewer"
     document: RetrospectiveDocument
+    version_id: str | None = None
 
 
 def mount_retrospective_api(app: FastAPI) -> None:
+    def check_version(value, incident_id, version_id):
+        if version_id is not None:
+            current = value.store.latest_version(incident_id)
+            if current is None or current.id != version_id:
+                raise PipelineError("复盘版本已变化，请刷新页面后重新核对")
+
     @contextmanager
     def execution(value, incident_id):
         with value.store.execution_lock(incident_id) as acquired:
@@ -123,6 +136,7 @@ def mount_retrospective_api(app: FastAPI) -> None:
         value = pipeline(request)
         try:
             with execution(value, incident_id):
+                check_version(value, incident_id, payload.version_id)
                 version = value.edit(incident_id, payload.document, payload.actor)
             return version.model_dump(mode="json")
         except Exception as exc:
@@ -133,6 +147,7 @@ def mount_retrospective_api(app: FastAPI) -> None:
         value = pipeline(request)
         try:
             with execution(value, incident_id):
+                check_version(value, incident_id, payload.version_id)
                 return value.approve(incident_id, payload.actor, payload.reason).model_dump(mode="json")
         except Exception as exc:
             raise as_http_error(exc) from exc
@@ -142,7 +157,54 @@ def mount_retrospective_api(app: FastAPI) -> None:
         value = pipeline(request)
         try:
             with execution(value, incident_id):
+                check_version(value, incident_id, payload.version_id)
                 return value.reject(incident_id, payload.actor, payload.reason).model_dump(mode="json")
+        except Exception as exc:
+            raise as_http_error(exc) from exc
+
+    @app.post("/api/retrospective/incidents/{incident_id}/revise", status_code=202)
+    def revise(incident_id: str, payload: RevisionCommand, request: Request) -> dict[str, Any]:
+        value = pipeline(request)
+        queue = getattr(request.app.state, "retrospective_queue", None)
+        if queue is None:
+            raise HTTPException(status_code=503, detail="retrospective task queue is unavailable")
+        try:
+            with execution(value, incident_id):
+                check_version(value, incident_id, payload.version_id)
+                incident = value.store.get_incident(incident_id)
+                if incident.status not in {IncidentStatus.PENDING_REVIEW, IncidentStatus.REJECTED}:
+                    raise PipelineError("Only pending or rejected retrospectives can be revised")
+                if not payload.reason.strip():
+                    raise PipelineError("Review feedback is required")
+                if incident.metadata.get("revision_job_status") in {"queued", "running"}:
+                    raise PipelineError("Agent 修订任务已提交，请等待完成")
+                if incident.status == IncidentStatus.REJECTED:
+                    # Preserve a separate audit record for each updated instruction.
+                    value.store.add_review_action(ReviewAction(incident_id=incident_id, action="reject",
+                        actor=payload.actor, reason=payload.reason, from_status=incident.status, to_status=incident.status))
+                else:
+                    value.reject(incident_id, payload.actor, payload.reason)
+                job_id = queue.enqueue_revision(incident_id, payload.version_id)
+                value.store.create_job(job_id, incident_id, "collecting", "queued")
+                current = value.store.get_incident(incident_id)
+                inline = job_id.startswith("inline:")
+                if inline:
+                    value.store.update_job(job_id, stage=current.status.value, status="completed")
+                value.store.update_incident(incident_id, metadata={**current.metadata,
+                    "revision_job_id": job_id, "revision_job_status": "completed" if inline else "queued"})
+            return {"incident_id": incident_id, "job_id": job_id, "accepted": True}
+        except Exception as exc:
+            raise as_http_error(exc) from exc
+
+    @app.post("/api/retrospective/incidents/{incident_id}/notify-review")
+    def notify_review(incident_id: str, request: Request) -> dict[str, Any]:
+        value = pipeline(request)
+        try:
+            with execution(value, incident_id):
+                version = value.store.latest_version(incident_id)
+                if version is None or value.review_notifier is None:
+                    raise PipelineError("Review notification is unavailable")
+                return value.review_notifier.notify(incident_id, version.id)
         except Exception as exc:
             raise as_http_error(exc) from exc
 
@@ -151,6 +213,7 @@ def mount_retrospective_api(app: FastAPI) -> None:
         value = pipeline(request)
         try:
             with execution(value, incident_id):
+                check_version(value, incident_id, payload.version_id)
                 result = value.publish(incident_id, payload.actor)
             publication = result["publication"]
             return {**result, "publication": publication.model_dump(mode="json")}

@@ -151,7 +151,7 @@ class ToolSelectionRegressionTests(unittest.TestCase):
         incident = helper.incident(pipeline)
         version = pipeline.run(incident.id)
         self.assertTrue(version.quality.hard_passed)
-        self.assertEqual(version.prompt_version, 'v3-standard-tools')
+        self.assertEqual(version.prompt_version, 'v6-human-review-feedback')
         snapshots = store.list_generation_contexts(incident.id)
         purposes = {s.payload['purpose'] for s in snapshots}
         self.assertTrue({'tool_exploration', 'tool_execution', 'tool_context_selection', 'retrospective'} <= purposes)

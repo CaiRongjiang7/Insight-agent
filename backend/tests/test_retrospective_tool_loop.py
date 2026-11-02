@@ -304,9 +304,11 @@ class RetrospectiveToolLoopTests(unittest.TestCase):
         self.assertEqual(len(context.tool_calls), 1)
         self.assertTrue(generator.final_inputs[1][0].metadata["generation_validation_errors"])
 
-    def test_regeneration_reuses_persisted_evidence_without_reopening_tools(self):
+    def test_regeneration_reopens_tools_with_reviewer_feedback(self):
         generator = ToolLoopGenerator([
             [function_call("code", "get_related_code", {"symbol": "Client.watcher", "direction": "both", "limit": 3})],
+            [],
+            [function_call("code-recheck", "get_related_code", {"symbol": "Client.watcher", "direction": "both", "limit": 3})],
             [],
         ], cite_code=True)
         context = FakeCodeContext()
@@ -317,7 +319,8 @@ class RetrospectiveToolLoopTests(unittest.TestCase):
         version = pipeline.regenerate(incident.id)
         self.assertEqual(version.version, 2)
         self.assertTrue(version.quality.hard_passed)
-        self.assertEqual(len(generator.requests), 2)
-        self.assertEqual((context.opens, context.closes), (1, 1))
-        self.assertEqual(len(context.tool_calls), 1)
+        self.assertEqual(len(generator.requests), 4)
+        self.assertEqual((context.opens, context.closes), (2, 2))
+        self.assertEqual(len(context.tool_calls), 2)
+        self.assertEqual(generator.final_inputs[-1][0].metadata['review_feedback']['reason'], 'verify persisted context')
         self.assertEqual(version.document.fix_solution.citations[0].evidence_id, f"ev_tool_restore_{incident.id}")

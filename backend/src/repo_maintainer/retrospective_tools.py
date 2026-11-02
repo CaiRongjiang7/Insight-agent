@@ -15,6 +15,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .retrospective_models import Evidence, EvidenceSource, IncidentRecord, KnowledgeHit
+from .retrospective_evidence_policy import material_role
 
 
 class _ToolArgs(BaseModel):
@@ -32,6 +33,24 @@ class SearchContextArgs(_ToolArgs):
     limit: int = Field(ge=1, le=5)
 
 
+class FindFilesArgs(_ToolArgs):
+    pattern: str = Field(min_length=1, max_length=160)
+    limit: int = Field(ge=1, le=40)
+
+
+class SearchCodeArgs(_ToolArgs):
+    query: str = Field(min_length=1, max_length=160, pattern=r'^[^\r\n\x00]+$')
+    file_pattern: str = Field(min_length=1, max_length=160)
+    case_sensitive: bool
+    limit: int = Field(ge=1, le=20)
+
+
+class ReadFileArgs(_ToolArgs):
+    path: str = Field(min_length=1, max_length=500)
+    start_line: int = Field(ge=1, le=1_000_000)
+    end_line: int = Field(ge=1, le=1_000_000)
+
+
 class ToolError(BaseModel):
     code: str
     message: str
@@ -43,6 +62,8 @@ class ToolResult(BaseModel):
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     historical_cases: list[dict[str, Any]] = Field(default_factory=list)
     candidates: list[str] = Field(default_factory=list)
+    locations: list[dict[str, Any]] = Field(default_factory=list)
+    search_scope: dict[str, Any] = Field(default_factory=dict)
     truncated: bool = False
     error: ToolError | None = None
     cache_hit: bool = False
@@ -87,7 +108,9 @@ class ToolExecutor:
         recorder: Callable[[dict[str, Any]], Any] | None = None,
         max_calls: int = 4,
         output_budget_chars: int = 8_000,
+        item_chars: int = 2_400,
         timeout_seconds: float = 30.0,
+        repository_search_enabled: bool = False,
     ) -> None:
         self.incident = incident
         self.code_session = code_session
@@ -96,6 +119,7 @@ class ToolExecutor:
         self.recorder = recorder
         self.max_calls = max(0, max_calls)
         self.output_budget_chars = max(0, output_budget_chars)
+        self.item_chars = max(500, item_chars)
         self.deadline = time.monotonic() + max(0, timeout_seconds)
         self.calls_used = 0
         self.used_chars = 0
@@ -103,6 +127,7 @@ class ToolExecutor:
         self.historical_hits: list[KnowledgeHit] = []
         self._raw = {e.id: e.model_copy(deep=True) for e in raw_evidence if e.incident_id == incident.id}
         self._cache: dict[str, ToolResult] = {}
+        self._cache_delivered: set[str] = set()
         self._served_evidence: set[str] = set()
         self._served_history: set[str] = set()
         self.specs = {
@@ -122,6 +147,18 @@ class ToolExecutor:
                 SearchContextArgs, self._search_history,
             ),
         }
+        if repository_search_enabled:
+            self.specs.update({
+                'find_repository_files': ToolSpec('find_repository_files',
+                    '在固定 SHA 的已索引文件中按相对路径通配符找文件；* 可匹配路径分隔符。仅导航，不是影响证据。',
+                    FindFilesArgs, self._find_files),
+                'search_repository_code': ToolSpec('search_repository_code',
+                    '在固定 SHA 内做单行字面量搜索（类似 grep -F，不支持正则）；返回有界路径/行号，随后用 read_repository_file 取可引用原文。未命中不证明未受影响。',
+                    SearchCodeArgs, self._search_code),
+                'read_repository_file': ToolSpec('read_repository_file',
+                    f'读取已索引相对路径的 1-based 闭区间，最多120行/{self.item_chars}字符（并受源码区域上限约束）并保存原文；源码、配置和文档仅支持静态候选，不证明本次运行影响。',
+                    ReadFileArgs, self._read_file),
+            })
 
     def definitions(self) -> list[dict[str, Any]]:
         return [spec.definition() for spec in self.specs.values()]
@@ -144,10 +181,14 @@ class ToolExecutor:
         cache_key = name + ":" + json.dumps(normalized, sort_keys=True, ensure_ascii=False)
         if cache_key in self._cache:
             previous = self._cache[cache_key]
+            if cache_key not in self._cache_delivered:
+                self._cache_delivered.add(cache_key)
+                return self._finish(name, normalized, self._replay_cached(previous), started)
             # A repeated result references already returned material; it does not
             # append the same bodies to the next model request again.
             result = ToolResult(
                 status=previous.status, candidates=list(previous.candidates),
+                search_scope=dict(previous.search_scope),
                 truncated=previous.truncated, error=previous.error, cache_hit=True,
                 reused_evidence_ids=[e["evidence_id"] for e in previous.evidence] + previous.reused_evidence_ids,
                 reused_knowledge_ids=[h["knowledge_id"] for h in previous.historical_cases] + previous.reused_knowledge_ids,
@@ -165,7 +206,53 @@ class ToolExecutor:
             # Avoid returning credentials or provider response bodies in messages.
             result = self._error("TOOL_FAILED", f"Tool failed: {type(exc).__name__}", retryable=True)
         self._cache[cache_key] = result.model_copy(deep=True)
+        self._cache_delivered.add(cache_key)
         return self._finish(name, normalized, result, started)
+
+    def on_compaction(self) -> None:
+        """A native checkpoint changed visible history, not source/cache identity."""
+        self._cache_delivered.clear()
+        self._served_evidence.clear()
+        self._served_history.clear()
+
+    def _replay_cached(self, previous: ToolResult) -> ToolResult:
+        # Rehydrate an already retrieved window once in the new context. Do not
+        # re-fetch external material, spend another region or duplicate originals.
+        if time.monotonic() >= self.deadline or self.used_chars >= self.output_budget_chars:
+            return ToolResult(status='budget_exhausted', cache_hit=True, error=ToolError(
+                code='BUDGET_EXHAUSTED', message='Cached window delivery budget exhausted'))
+        result = previous.model_copy(deep=True)
+        result.cache_hit = True
+        for field, id_key, reused_key in [('evidence', 'evidence_id', 'reused_evidence_ids'),
+                                         ('historical_cases', 'knowledge_id', 'reused_knowledge_ids')]:
+            items = {item[id_key]: item for item in getattr(result, field)}
+            for reused_id in getattr(previous, reused_key):
+                for cached in self._cache.values():
+                    original = next((item for item in getattr(cached, field) if item[id_key] == reused_id), None)
+                    if original is not None:
+                        items.setdefault(reused_id, dict(original))
+                        break
+            delivered = []
+            for item in items.values():
+                body, clipped, _ = self._take_body(item['content'], self.item_chars if field == 'evidence' else 1500)
+                if not body:
+                    result.truncated = True
+                    break
+                item['content'] = body
+                item['truncated'] |= clipped
+                if clipped and field == 'evidence': item['region_complete'] = False
+                result.truncated |= clipped
+                delivered.append(item)
+            setattr(result, field, delivered)
+        result.locations = []
+        for location in previous.locations:
+            size = len(json.dumps(location, ensure_ascii=False))
+            if self.used_chars + size > self.output_budget_chars:
+                result.truncated = True
+                break
+            self.used_chars += size
+            result.locations.append(dict(location))
+        return result
 
     def _finish(self, name, arguments, result, started) -> ToolResult:
         if self.recorder is not None:
@@ -187,6 +274,55 @@ class ToolExecutor:
         if self.code_session is None:
             return self._error("CODE_UNAVAILABLE", "Pinned repository snapshot is unavailable")
         lookup = self.code_session.get_related_code(args.symbol, args.direction, args.limit)
+        return self._code_result(lookup, args.limit)
+
+    def _read_file(self, args: ReadFileArgs) -> ToolResult:
+        if self.code_session is None:
+            return self._error('CODE_UNAVAILABLE', 'Pinned repository snapshot is unavailable')
+        if args.end_line < args.start_line or args.end_line - args.start_line >= 120:
+            return self._error('INVALID_ARGUMENTS', 'Read at most 120 lines in ascending order')
+        try:
+            lookup = self.code_session.read_file(args.path, args.start_line, args.end_line)
+        except ValueError:
+            return self._error('INVALID_PATH', 'Path is outside the indexed snapshot')
+        return self._code_result(lookup, 1)
+
+    def _find_files(self, args: FindFilesArgs) -> ToolResult:
+        return self._navigate(lambda: self.code_session.find_files(args.pattern, args.limit))
+
+    def _search_code(self, args: SearchCodeArgs) -> ToolResult:
+        return self._navigate(lambda: self.code_session.search_code(
+            args.query, args.file_pattern, args.case_sensitive, args.limit,
+            min(self.deadline, time.monotonic() + 3)))
+
+    def _navigate(self, lookup: Callable) -> ToolResult:
+        if self.code_session is None:
+            return self._error('CODE_UNAVAILABLE', 'Pinned repository snapshot is unavailable')
+        try:
+            found = lookup()
+        except ValueError:
+            return self._error('INVALID_PATH', 'Use an indexed repository-relative path pattern')
+        scope = {**found['search_scope'], 'repo_id': self.incident.repo_id,
+                 'commit_sha': str(self.incident.metadata.get('head_sha') or self.incident.commit_sha),
+                 'material_role': 'static_candidate', 'navigation_only': True,
+                 'impact_coverage': 'unknown'}
+        result = ToolResult(status='empty', truncated=found['truncated'], search_scope=scope)
+        for location in found['locations']:
+            # Navigation bodies share the same budget as source/chat/history.
+            size = len(json.dumps(location, ensure_ascii=False))
+            if self.used_chars + size > self.output_budget_chars:
+                result.truncated = True
+                result.search_scope['scan_completed'] = False
+                break
+            self.used_chars += size
+            result.locations.append(location)
+        if result.locations:
+            result.status = 'ok'
+        elif found['locations']:
+            result.status = 'budget_exhausted'
+        return result
+
+    def _code_result(self, lookup, limit: int) -> ToolResult:
         status = getattr(lookup, "status", "error")
         candidates = [str(item)[:300] for item in getattr(lookup, "candidates", [])[:6]]
         if status == "ambiguous":
@@ -220,21 +356,30 @@ class ToolExecutor:
         for item in new:
             self._raw[item.id] = item.model_copy(deep=True)
             self.added_evidence.append(item.model_copy(deep=True))
-        return self._evidence_result(evidence[:args.limit], truncated=bool(getattr(lookup, "truncated", False)) or len(evidence) > args.limit)
+        return self._evidence_result(evidence[:limit], truncated=bool(getattr(lookup, "truncated", False)) or len(evidence) > limit)
 
     def _search_feishu(self, args: SearchContextArgs) -> ToolResult:
         terms = _query_terms(args.query)
         ranked = []
-        for item in self._raw.values():
-            if item.source_type not in {EvidenceSource.FEISHU_MESSAGE, EvidenceSource.FEISHU_DOC}:
-                continue
+        eligible = [item for item in self._raw.values()
+                    if item.source_type in {EvidenceSource.FEISHU_MESSAGE, EvidenceSource.FEISHU_DOC}]
+        scope = {'eligible_materials': len(eligible), 'external_fetch': False,
+                 'impact_coverage': 'unknown', 'source_scope': 'already_collected_incident_chat_and_docs'}
+        if not eligible:
+            scope['availability'] = 'no_collected_material'
+            scope['retry_with_new_query'] = False
+            scope['note'] = '本次没有已采集的群聊或文档；此工具不实时连接飞书。改写查询不能增加素材，请保留缺口并停止对此来源重复查询。'
+            return ToolResult(status='empty', search_scope=scope)
+        for item in eligible:
             content = item.content.casefold()
             score = sum(min(len(term), 12) for term in terms if term in content)
             if score:
                 ranked.append((score, item))
         ranked.sort(key=lambda pair: (-pair[0], pair[1].id))
-        return self._evidence_result([item for _, item in ranked[:args.limit]],
-                                     truncated=len(ranked) > args.limit, query_terms=terms)
+        result = self._evidence_result([item for _, item in ranked[:args.limit]],
+                                       truncated=len(ranked) > args.limit, query_terms=terms)
+        result.search_scope = scope
+        return result
 
     def _search_history(self, args: SearchContextArgs) -> ToolResult:
         if self.history_search is None:
@@ -296,14 +441,14 @@ class ToolExecutor:
             if item.id in self._served_evidence:
                 result.reused_evidence_ids.append(item.id)
                 continue
-            content, clipped, offset = self._take_body(item.content, 2_400, query_terms)
+            content, clipped, offset = self._take_body(item.content, self.item_chars, query_terms)
             if not content:
                 result.truncated = True
                 break
-            role = {EvidenceSource.FEISHU_MESSAGE: "participant_statement",
-                    EvidenceSource.FEISHU_DOC: "document_statement"}.get(item.source_type, "source_text")
+            role = material_role(item.source_type)
             result.evidence.append({
                 "evidence_id": item.id, "source_type": item.source_type.value, "material_role": role,
+                'impact_coverage': 'unknown',
                 "location": item.location[:500], "source_url": item.source_url[:1000],
                 "commit_sha": item.commit_sha, "content": content, "truncated": clipped,
                 "excerpt_start": offset,

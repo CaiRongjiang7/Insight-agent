@@ -3,6 +3,8 @@ __pycache__
 .pytest_cache
 .demo_data
 .review_logs
+.env
+runtime
 tests
 examples
 

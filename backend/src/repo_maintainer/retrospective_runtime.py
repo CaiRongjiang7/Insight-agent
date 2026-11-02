@@ -16,10 +16,12 @@ from .retrospective_connectors import (
 from .retrospective_pipeline import ContextSelector, RetrospectivePipeline
 from .retrospective_code_context import GitHubArchiveSource, RepositoryCodeContext
 from .retrospective_store import PostgresRetrospectiveStore, record_generation_context
+from .retrospective_notifications import ReviewNotifier
 
 
 class TaskQueue(Protocol):
     def enqueue(self, incident_id: str) -> str: ...
+    def enqueue_revision(self, incident_id: str, version_id: str) -> str: ...
 
 
 class InlineTaskQueue:
@@ -32,6 +34,10 @@ class InlineTaskQueue:
         self.pipeline.run(incident_id)
         return f"inline:{incident_id}"
 
+    def enqueue_revision(self, incident_id: str, version_id: str) -> str:
+        self.pipeline.regenerate(incident_id)
+        return f"inline:revision:{version_id}"
+
 
 class CeleryTaskQueue:
     def __init__(self, broker_url: str) -> None:
@@ -43,6 +49,10 @@ class CeleryTaskQueue:
 
     def enqueue(self, incident_id: str) -> str:
         result = self.client.send_task("repo_maintainer.run_retrospective", args=[incident_id])
+        return str(result.id)
+
+    def enqueue_revision(self, incident_id: str, version_id: str) -> str:
+        result = self.client.send_task("repo_maintainer.revise_retrospective", args=[incident_id, version_id])
         return str(result.id)
 
 
@@ -76,14 +86,20 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
         wiki_space_id=feishu_space_id,
         wiki_parent_node_token=feishu_parent,
     )
+    def enqueue_notification_retry(incident_id, version_id):
+        queue = CeleryTaskQueue(redis_url)
+        queue.client.send_task("repo_maintainer.notify_retrospective_review", args=[incident_id, version_id], countdown=10)
+
+    notifier = ReviewNotifier(store, collaboration, os.getenv("REVIEW_PUBLIC_BASE_URL", ""), enqueue_notification_retry)
     generator = OpenAIReviewGenerator(
         api_key=openai_api_key, model=openai_model, base_url=base_url,
-        timeout=float(os.getenv('OPENAI_TIMEOUT_SECONDS', '60')),
+        timeout=float(os.getenv('OPENAI_TIMEOUT_SECONDS', '120')),
         enable_thinking=_optional_bool_env('OPENAI_ENABLE_THINKING'),
     )
     generator.discovery_recorder = lambda incident, request: record_generation_context(
         store, incident, 'code_discovery', request, scope='provider_request')
     tools_enabled = _optional_bool_env('REVIEW_TOOLS_ENABLED') is not False
+    investigation_runner = create_investigation_runner_from_env(enabled=tools_enabled)
     code_context = None
     if os.getenv("CODE_CONTEXT_ENABLED", "1").strip().lower() not in {"0", "false", "no"}:
         code_context = RepositoryCodeContext(
@@ -93,7 +109,9 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
                 max_archive_bytes=int(os.getenv("CODE_CONTEXT_MAX_ARCHIVE_BYTES", "30000000")),
             ),
             max_files=int(os.getenv("CODE_CONTEXT_MAX_FILES", "10")),
-            max_expanded_files=int(os.getenv("CODE_CONTEXT_MAX_EXPANDED_FILES", "40")),
+            max_expanded_files=int(os.getenv("CODE_CONTEXT_MAX_EXPANDED_FILES", "120")),
+            max_regions_per_file=int(os.getenv("CODE_CONTEXT_MAX_REGIONS_PER_FILE", "4")),
+            max_snippet_chars=int(os.getenv("CODE_CONTEXT_MAX_SNIPPET_CHARS", "12000")),
             planner=(generator.plan_code_context
                      if _optional_bool_env('CODE_CONTEXT_PLANNER_ENABLED') is True and not tools_enabled else None),
         )
@@ -111,8 +129,8 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
         ),
         github_webhook_secret=github_secret,
         selector=ContextSelector(
-            budget_chars=int(os.getenv("CONTEXT_BUDGET_CHARS", "24000")),
-            max_item_chars=int(os.getenv("CONTEXT_ITEM_MAX_CHARS", "6000")),
+            budget_chars=int(os.getenv("CONTEXT_BUDGET_CHARS", "600000")),
+            max_item_chars=int(os.getenv("CONTEXT_ITEM_MAX_CHARS", "60000")),
         ),
         top_k=int(os.getenv("RAG_TOP_K", "5")),
         rerank_pool=int(os.getenv("RAG_RERANK_POOL", "20")),
@@ -120,7 +138,47 @@ def create_pipeline_from_env(*, initialize_store: bool = False) -> Retrospective
         default_feishu_chat_ids=_csv_env("FEISHU_CHAT_IDS"),
         default_feishu_doc_tokens=_csv_env("FEISHU_DOC_TOKENS"),
         tools_enabled=tools_enabled,
+        investigation_runner=investigation_runner,
+        review_notifier=notifier,
     )
+
+
+def create_investigation_runner_from_env(*, enabled: bool = True):
+    from .investigation_runner import StandardInvestigationRunner
+
+    mode = os.getenv("REVIEW_INVESTIGATION_RUNNER", "builtin").strip() or "builtin"
+    if mode not in {"builtin", "deepseek"}:
+        raise ValueError("REVIEW_INVESTIGATION_RUNNER must be builtin or deepseek")
+    if mode == "builtin" or not enabled:
+        return StandardInvestigationRunner()
+    from .deepseek_runner import DeepSeekInvestigationRunner
+    from .retrospective_harness_state import HarnessSettings, validate_installation
+
+    validate_installation()
+    return DeepSeekInvestigationRunner(HarnessSettings(
+        model=os.getenv("REVIEW_HARNESS_MODEL", "").strip() or _required("OPENAI_MODEL"),
+        api_key=os.getenv("REVIEW_HARNESS_API_KEY", "").strip() or _required("OPENAI_API_KEY"),
+        base_url=os.getenv("REVIEW_HARNESS_BASE_URL", "").strip() or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").strip(),
+        root=Path(os.getenv("REVIEW_HARNESS_ROOT", "runtime/harness")),
+        api=os.getenv("REVIEW_HARNESS_API", "openai-completions"),
+        timeout_seconds=float(os.getenv("REVIEW_HARNESS_TIMEOUT_SECONDS", "600")),
+        model_timeout_seconds=float(os.getenv("REVIEW_HARNESS_MODEL_TIMEOUT_SECONDS", "120")),
+        max_rounds=int(os.getenv("REVIEW_HARNESS_MAX_ROUNDS", "40")),
+        max_calls=int(os.getenv('REVIEW_HARNESS_MAX_CALLS', '80')),
+        tool_output_chars=int(os.getenv('REVIEW_HARNESS_TOOL_OUTPUT_CHARS', '600000')),
+        tool_item_chars=int(os.getenv('REVIEW_HARNESS_TOOL_ITEM_CHARS', '12000')),
+        initial_context_chars=int(os.getenv('REVIEW_HARNESS_INITIAL_CONTEXT_CHARS', '160000')),
+        initial_item_chars=int(os.getenv('REVIEW_HARNESS_INITIAL_ITEM_CHARS', '24000')),
+        request_max_bytes=int(os.getenv('REVIEW_HARNESS_REQUEST_MAX_BYTES', '16000000')),
+        max_output_tokens=int(os.getenv("REVIEW_HARNESS_MAX_OUTPUT_TOKENS", "4096")),
+        context_tokens=int(os.getenv("REVIEW_HARNESS_CONTEXT_TOKENS", "1000000")),
+        enable_thinking=_optional_bool_env("OPENAI_ENABLE_THINKING"),
+        compaction_enabled=_optional_bool_env('REVIEW_HARNESS_COMPACTION_ENABLED') is not False,
+        compaction_max_requests=int(os.getenv('REVIEW_HARNESS_COMPACTION_MAX_REQUESTS', '4')),
+        compaction_max_tokens=int(os.getenv('REVIEW_HARNESS_COMPACTION_MAX_TOKENS', '16384')),
+        compaction_threshold=float(os.getenv('REVIEW_HARNESS_COMPACTION_THRESHOLD', '0.8')),
+        compaction_headroom=int(os.getenv('REVIEW_HARNESS_COMPACTION_HEADROOM', '32768')),
+    ))
 
 
 def create_task_queue_from_env(pipeline: RetrospectivePipeline) -> TaskQueue:

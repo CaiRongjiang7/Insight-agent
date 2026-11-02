@@ -9,7 +9,13 @@ export interface CoreBackedText { content: string; citations: CoreCitation[] }
 export interface CoreDocument {
   title: string;
   summary: string;
-  impact: { scope: string; severity: "P0" | "P1" | "P2" | "P3"; affected_users?: string | null; citations: CoreCitation[] };
+  impact: {
+    scope: string; severity: "P0" | "P1" | "P2" | "P3"; affected_users?: string | null; citations: CoreCitation[];
+    scope_basis?: "observed" | "reported" | "unknown";
+    coverage?: "partial" | "unknown";
+    coverage_notes?: string;
+    potential_impacts?: Array<CoreBackedText & { status: "unverified"; verification_needed: string }>;
+  };
   root_cause: CoreBackedText;
   fix_solution: CoreBackedText;
   prevention: string[];
@@ -29,7 +35,7 @@ export interface CoreIncident {
   trace_id: string;
   error: string;
   failed_stage: string;
-  metadata?: { code_context_warning?: string };
+  metadata?: { code_context_warning?: string; review_notification_error?: string; revision_job_status?: string };
   current_version: number;
   created_at: string;
   updated_at: string;
@@ -92,17 +98,23 @@ export const retrospectiveApi = {
   regenerate(id: string) {
     return http.post(`/retrospective/incidents/${id}/regenerate`).then((response) => response.data);
   },
-  edit(id: string, actor: string, document: CoreDocument) {
-    return http.patch(`/retrospective/incidents/${id}/document`, { actor, document }).then((response) => response.data);
+  revise(id: string, actor: string, reason: string, versionId: string) {
+    return http.post(`/retrospective/incidents/${id}/revise`, { actor, reason, version_id: versionId }).then((response) => response.data);
   },
-  approve(id: string, actor: string, reason = "") {
-    return http.post(`/retrospective/incidents/${id}/approve`, { actor, reason }).then((response) => response.data);
+  notifyReview(id: string) {
+    return http.post(`/retrospective/incidents/${id}/notify-review`).then((response) => response.data);
   },
-  reject(id: string, actor: string, reason: string) {
-    return http.post(`/retrospective/incidents/${id}/reject`, { actor, reason }).then((response) => response.data);
+  edit(id: string, actor: string, document: CoreDocument, versionId?: string) {
+    return http.patch(`/retrospective/incidents/${id}/document`, { actor, document, version_id: versionId }).then((response) => response.data);
   },
-  publish(id: string, actor: string) {
-    return http.post(`/retrospective/incidents/${id}/publish`, { actor }).then((response) => response.data);
+  approve(id: string, actor: string, reason = "", versionId?: string) {
+    return http.post(`/retrospective/incidents/${id}/approve`, { actor, reason, version_id: versionId }).then((response) => response.data);
+  },
+  reject(id: string, actor: string, reason: string, versionId?: string) {
+    return http.post(`/retrospective/incidents/${id}/reject`, { actor, reason, version_id: versionId }).then((response) => response.data);
+  },
+  publish(id: string, actor: string, versionId?: string) {
+    return http.post(`/retrospective/incidents/${id}/publish`, { actor, version_id: versionId }).then((response) => response.data);
   },
   search(q: string, repoId = "", incidentType = "") {
     return http.get("/retrospective/knowledge/search", {

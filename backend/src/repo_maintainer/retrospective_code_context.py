@@ -27,6 +27,7 @@ from .models import IncidentReport
 from .repo_indexer import RepositoryIndexer
 from .retrospective_models import Evidence, EvidenceSource, IncidentRecord
 from .retrospective_discovery import CodeDiscoveryPlan, CodeSymbol, PythonSymbolIndex, service_map_context
+from .retrospective_repository_search import SnapshotSearch, safe_source_path
 
 
 class RepositoryContextError(RuntimeError):
@@ -413,6 +414,7 @@ class RepositoryCodeSession:
         self.incident = incident.model_copy(deep=True)
         self.root = root
         self.snapshot = owner.indexer.index(root)
+        self.navigator = SnapshotSearch(root, self.snapshot.files)
         self.symbols = PythonSymbolIndex(root, set(self.snapshot.files))
         self.revision = str(self.incident.metadata.get('head_sha') or self.incident.commit_sha)
         self._evidence: dict[str, Evidence] = {}
@@ -453,7 +455,7 @@ class RepositoryCodeSession:
         for existing in self._regions.get(symbol.path, []):
             if existing.metadata['line_start'] <= symbol.first <= existing.metadata['line_end']:
                 return existing.model_copy(deep=True)
-        text = _read_source(self.root / symbol.path)
+        text = _read_source(safe_source_path(self.root, self.navigator.files, symbol.path))
         region = _select_region(text, {symbol.first}, {symbol.name}, self.owner.max_snippet_chars)
         if region is None:
             return None
@@ -475,6 +477,49 @@ class RepositoryCodeSession:
                       'region_complete': first == symbol.first and last == symbol.last},
             selection_reason='tool_symbol_context',
         ))
+
+    def find_files(self, pattern: str, limit: int) -> dict:
+        self._require_open()
+        return self.navigator.find_files(pattern, limit)
+
+    def search_code(self, query: str, pattern: str, case_sensitive: bool, limit: int, deadline: float) -> dict:
+        self._require_open()
+        return self.navigator.search(query, pattern, case_sensitive, limit, deadline)
+
+    def read_file(self, path: str, start_line: int, end_line: int) -> CodeLookupResult:
+        self._require_open()
+        if not 1 <= start_line <= end_line or end_line - start_line >= 120:
+            return CodeLookupResult('error', error='Invalid line range')
+        target = safe_source_path(self.root, self.navigator.files, path)
+        if target.stat().st_size > SnapshotSearch.MAX_FILE_BYTES:
+            return CodeLookupResult('error', error='Source file exceeds read limit')
+        lines = _read_source(target).splitlines()
+        if start_line > len(lines):
+            return CodeLookupResult('empty')
+        selected, used = [], 0
+        for line in lines[start_line - 1:end_line]:
+            if used + len(line) + 1 > self.owner.max_snippet_chars:
+                break
+            selected.append(line)
+            used += len(line) + 1
+        if not selected or not '\n'.join(selected).strip():
+            return CodeLookupResult('empty', truncated=start_line <= len(lines))
+        last = start_line + len(selected) - 1
+        digest = hashlib.sha1(f'{self.incident.id}:{self.revision}:{path}:{start_line}:{last}'.encode()).hexdigest()[:20]
+        item = self._remember(Evidence(
+            id=f'ev_code_{digest}', incident_id=self.incident.id, source_type=EvidenceSource.REPOSITORY_CODE,
+            content='\n'.join(selected), location=f'{path}#L{start_line}-L{last}',
+            source_url=(f'https://github.com/{self.incident.repo_name}/blob/{self.revision}/'
+                        f'{quote(path)}#L{start_line}-L{last}' if self.incident.repo_name else ''),
+            repo_id=self.incident.repo_id, commit_sha=self.revision,
+            metadata={'file_path': path, 'line_start': start_line, 'line_end': last,
+                      'analysis': 'static_candidate', 'relation': ['tool_file_range'],
+                      'region_complete': start_line == 1 and last == len(lines)},
+            selection_reason='tool_file_range',
+        ))
+        if item is None:
+            return CodeLookupResult('budget_exhausted', truncated=True)
+        return CodeLookupResult('ok', evidence=[item], truncated=last < min(end_line, len(lines)))
 
     def get_related_code(self, symbol: str, direction: str = 'both', limit: int = 6) -> CodeLookupResult:
         self._require_open()

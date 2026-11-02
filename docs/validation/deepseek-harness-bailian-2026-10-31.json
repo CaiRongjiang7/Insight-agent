@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-31",
+  "scope": "user-authorized synthetic compatibility probe",
+  "sdk_version": "0.2.1rc2",
+  "mcp_version": "2.3.0",
+  "cloud_probe_image": "cbc396753a10",
+  "timestamp_utc": "2026-10-31T09:22:25.089676+00:00",
+  "model": "qwen3.7-flash",
+  "endpoint_host": "dashscope.aliyuncs.com",
+  "api": "openai-completions",
+  "session_id": "toolrun_665e8d34dc1a496b9939699aa8c7add1",
+  "stop_reason": "no_tool_calls",
+  "model_requests": 2,
+  "tool_calls": 1,
+  "tool_outcomes": [
+    {
+      "tool": "search_feishu_context",
+      "status": "ok",
+      "error": ""
+    }
+  ],
+  "runtime_events": 20,
+  "error_type": "",
+  "model_usage": [
+    {
+      "inputTokens": 1496,
+      "outputTokens": 578,
+      "totalTokens": 2074
+    },
+    {
+      "inputTokens": 3305,
+      "outputTokens": 220,
+      "totalTokens": 3525
+    }
+  ],
+  "duration_seconds": 12.084,
+  "request_snapshots": 2,
+  "retrieved_marker": true,
+  "upstream_credential_absent_from_contexts": true,
+  "thinking_option": null,
+  "material_scope": "synthetic fixture only; no live repository, chat, database, writer or publication access",
+  "passed": true,
+  "usage_totals": {
+    "inputTokens": 4801,
+    "outputTokens": 798,
+    "totalTokens": 5599
+  },
+  "request_snapshot_hashes": [
+    "7ffc668aadcdcf5a22fab9b6eb8b4efa3af07d39cbb02c406ee067cd9eba4a16",
+    "041c9e62392447af88adf643d99f911212051068de560daf52e33c566b574f16"
+  ],
+  "raw_contexts_sha256": "0fc6dfa31d9c5e11f61323c338ccc313b174b017d280bc4debad86005fc16494",
+  "trace_mapping_correction": {
+    "reason": "read canonical message.toolCallId instead of message.callId",
+    "verified_by_offline_replay": true,
+    "additional_cloud_requests": 0,
+    "mappings": [
+      {
+        "bridge_call_id": "bridge_203bb0d29238a941747404aa",
+        "harness_call_id": "call_92eb98e3851841db94cc3b38"
+      }
+    ]
+  },
+  "limitations": [
+    "single synthetic case",
+    "investigation only; final writer and publication not invoked",
+    "openai-completions route only",
+    "not a production rollout or incident-quality benchmark"
+  ],
+  "candidate_image_after_trace_fix": "9463af97d908",
+  "candidate_installed_package_trace_replay_passed": true,
+  "post_fix_related_tests": {
+    "passed": 34,
+    "skipped": 0,
+    "includes": "real SDK/MCP and isolated PostgreSQL; no cloud calls"
+  }
+}

@@ -1,0 +1,332 @@
+{
+  "date": "2026-11-01",
+  "timezone": "Asia/Shanghai",
+  "branch": "codex/deepseek-harness-upgrade",
+  "baseline": "3af8ea8 + workspace",
+  "backend_image": "f6d6e16cd93fa1ac598fd2b6ef910e3d92fb6d822b125afff6cf2b7aba3ea948",
+  "previous_backend_image": "09cfad0a2e56",
+  "frontend_image_unchanged": "94fb78ab4fa1",
+  "rollback_tag": "insight-review-backend:rollback-compaction-20261101",
+  "backup_database_bytes": 70343,
+  "live_configuration": {
+    "public_base_url": "http://10.160.226.172",
+    "runner": "deepseek",
+    "model": "qwen3.7-flash",
+    "endpoint_host": "dashscope.aliyuncs.com",
+    "thinking": false,
+    "compaction": true,
+    "context_tokens": 32768,
+    "max_rounds": 6,
+    "max_compaction_requests": 2,
+    "compaction_max_tokens": 2048,
+    "compaction_threshold": 0.8,
+    "compaction_headroom": 2048,
+    "original_evidence_count": 4,
+    "pending_review": "pending_review",
+    "version_count": 1,
+    "approval_actions": 0,
+    "group_count": 0,
+    "document_count": 0,
+    "source_sha256": {
+      "retrospective_compaction.py": "95d15d1a353401e15dbfadb5f8bfc7cf930f7249a2b1b8caeca5b483afc070a2",
+      "retrospective_mcp.py": "5be15fec7beb10856cc150e6e32ea4c2b880c5bf07e6bb8389aacd38c0735b13",
+      "retrospective_harness_state.py": "a5494eb04a203fddbf719a925e7026b5c2920e3f33cf72fca4cd40e9c9190184",
+      "retrospective_harness_trace.py": "00f647502627ace6f55afe6ad3892364336c4e4a187923842c815ac6a15e1a3e",
+      "retrospective_tools.py": "44dda731d3f644c9da1b8fb5bdb121a6d0fbb095ae92ecde2af9007e9e4d9903",
+      "deepseek_runner.py": "a6ba86577f2e46b060a26d2afd54ed6ee2c14a4c295523f0029419c33f4dacbc",
+      "retrospective_connectors.py": "dde26d95b619e52c6488c9a91b2221fc26c5b6e6253ee1e458ec873288bfa59a",
+      "retrospective_pipeline.py": "26266c7bf76ff36c27be70235de405face4f3e8ebb915861e1a127c2698a460e",
+      "retrospective_evidence_policy.py": "42dc1841b4ac61891d5bb6dc5f514c3292564550f2a81543dddf6fa83e719a9a"
+    },
+    "credential_absent_from_generation_contexts": true,
+    "api_orphan_harness_processes": 0,
+    "package_versions": {
+      "deepseek-harness-sdk": "0.2.1rc2",
+      "deepseek-harness-runtime-bin": "0.2.1rc2",
+      "mcp": "2.3.0",
+      "openai": "2.54.0",
+      "pydantic": "2.14.2",
+      "fastapi": "0.162.0",
+      "starlette": "1.10.0"
+    }
+  },
+  "real_model_attempts": [
+    {
+      "attempt": "02",
+      "location": "candidate_container",
+      "passed": false,
+      "timestamp_utc": "2026-11-01T09:55:37.160172+00:00",
+      "model_requests": 4,
+      "compaction_requests": 2,
+      "tool_calls": 3,
+      "native_summaries": 0,
+      "native_failures": null,
+      "stop_reason": "model_error",
+      "duration_seconds": 24.83,
+      "reported_total_tokens": 24101,
+      "usage_incomplete": true
+    },
+    {
+      "attempt": "03",
+      "location": "candidate_container",
+      "passed": false,
+      "timestamp_utc": "2026-11-01T10:03:49.190380+00:00",
+      "model_requests": 6,
+      "compaction_requests": 2,
+      "tool_calls": 5,
+      "native_summaries": 0,
+      "native_failures": 4,
+      "stop_reason": "compaction_limit",
+      "duration_seconds": 32.774,
+      "reported_total_tokens": 57951,
+      "usage_incomplete": false
+    },
+    {
+      "attempt": "04",
+      "location": "candidate_container",
+      "passed": true,
+      "timestamp_utc": "2026-11-01T10:07:07.979846+00:00",
+      "model_requests": 6,
+      "compaction_requests": 1,
+      "tool_calls": 5,
+      "native_summaries": 1,
+      "native_failures": 0,
+      "stop_reason": "no_tool_calls",
+      "duration_seconds": 22.059,
+      "reported_total_tokens": 73225,
+      "usage_incomplete": false
+    },
+    {
+      "attempt": "05",
+      "location": "candidate_container",
+      "passed": true,
+      "timestamp_utc": "2026-11-01T10:21:16.503043+00:00",
+      "model_requests": 6,
+      "compaction_requests": 1,
+      "tool_calls": 5,
+      "native_summaries": 1,
+      "native_failures": 0,
+      "stop_reason": "no_tool_calls",
+      "duration_seconds": 29.385,
+      "reported_total_tokens": 75423,
+      "usage_incomplete": false
+    },
+    {
+      "attempt": "06",
+      "location": "deployed_api_container",
+      "passed": false,
+      "timestamp_utc": "2026-11-01T10:26:33.266096+00:00",
+      "model_requests": 1,
+      "compaction_requests": 0,
+      "tool_calls": 0,
+      "native_summaries": 0,
+      "native_failures": 0,
+      "stop_reason": "no_tool_calls",
+      "duration_seconds": 2.778,
+      "reported_total_tokens": 6022,
+      "usage_incomplete": false
+    },
+    {
+      "attempt": "07",
+      "location": "deployed_api_container",
+      "passed": true,
+      "timestamp_utc": "2026-11-01T10:31:30.409573+00:00",
+      "model_requests": 6,
+      "compaction_requests": 1,
+      "tool_calls": 5,
+      "native_summaries": 1,
+      "native_failures": 0,
+      "stop_reason": "no_tool_calls",
+      "duration_seconds": 23.412,
+      "reported_total_tokens": 74505,
+      "usage_incomplete": false
+    }
+  ],
+  "deployed_stress": {
+    "passed": true,
+    "timestamp_utc": "2026-11-01T10:31:30.409573+00:00",
+    "model": "qwen3.7-flash",
+    "endpoint_host": "dashscope.aliyuncs.com",
+    "run_id": "toolrun_eb0cc24134d94114b87fcc56df65ddc4",
+    "exploration_requests": 6,
+    "compaction_requests": 1,
+    "tool_calls": 5,
+    "tools": [
+      "find_repository_files",
+      "get_related_code",
+      "read_repository_file",
+      "search_feishu_context"
+    ],
+    "native_events": [
+      "compaction/start",
+      "compaction/summary",
+      "compaction/end"
+    ],
+    "native_errors": 0,
+    "duration_seconds": 23.412,
+    "reported_total_tokens": 74505,
+    "raw_originals": 13,
+    "preserved_originals": true,
+    "credential_absent": true,
+    "stress_overrides": {
+      "context_tokens": 16384,
+      "threshold": 0.8,
+      "headroom": 2048,
+      "tool_chars": 24000,
+      "max_rounds": 8,
+      "timeout_seconds": 180
+    }
+  },
+  "deployed_pipeline": {
+    "passed": true,
+    "timestamp_utc": "2026-11-01T10:30:02.178263+00:00",
+    "incident_id": "inc_4cb0dcb96ce44df38c0dd594069515b5",
+    "job_id": "f0cf8f34-d464-4743-b3c4-4bd2b7dbd26c",
+    "duration_seconds": 15.258,
+    "state": "pending_review",
+    "version_id": "retro_c06ca329f4374fc79159bca1799da7bb",
+    "version": 1,
+    "prompt_version": "v6-human-review-feedback",
+    "writer_model": "qwen3.7-flash",
+    "writer_input_tokens": 2620,
+    "writer_output_tokens": 596,
+    "evidence_count": 4,
+    "quality_hard_errors": [],
+    "impact": {
+      "scope": "模拟图像服务请求超时",
+      "severity": "P2",
+      "affected_users": "unknown",
+      "citations": [
+        {
+          "evidence_id": "ev_4fe5a1f1c4754ff9a1a9610579180152",
+          "quote": "[SYNTHETIC ONLY] ERROR image.request_timeout"
+        }
+      ],
+      "scope_basis": "observed",
+      "coverage": "unknown",
+      "coverage_notes": "目前不能证明全量影响范围；材料缺少不等于没有影响",
+      "potential_impacts": [
+        {
+          "content": "若支付服务存在依赖调用链路且超时传播条件成立（如同步调用、无熔断降级），可能导致支付服务受影响",
+          "status": "unverified",
+          "citations": [
+            {
+              "evidence_id": "ev_0a10dd9f566f46d099196020fbf1e969",
+              "quote": "支付服务未被报告，不能据此排除或确认影响"
+            }
+          ],
+          "verification_needed": "需要核对支付服务运行日志、指标、Trace及部署版本和窗口，确认是否存在依赖调用及超时传播"
+        }
+      ]
+    },
+    "exploration": {
+      "rounds": 2,
+      "run_id": "toolrun_a8c6bd826409409db0b26284149a6afa",
+      "runtime": "deepseek",
+      "max_calls": 12,
+      "calls_used": 1,
+      "error_type": "",
+      "session_id": "toolrun_a8c6bd826409409db0b26284149a6afa",
+      "model_usage": [
+        {
+          "inputTokens": 2304,
+          "totalTokens": 2385,
+          "outputTokens": 81
+        },
+        {
+          "inputTokens": 2585,
+          "totalTokens": 2698,
+          "outputTokens": 113
+        }
+      ],
+      "stop_reason": "no_tool_calls",
+      "output_chars": 0,
+      "tool_outcomes": [
+        {
+          "tool": "search_feishu_context",
+          "error": "",
+          "status": "empty",
+          "truncated": false,
+          "search_scope": {
+            "note": "本次没有已采集的群聊或文档；此工具不实时连接飞书。改写查询不能增加素材，请保留缺口并停止对此来源重复查询。",
+            "availability": "no_collected_material",
+            "source_scope": "already_collected_incident_chat_and_docs",
+            "external_fetch": false,
+            "impact_coverage": "unknown",
+            "eligible_materials": 0,
+            "retry_with_new_query": false
+          }
+        }
+      ],
+      "runtime_events": 20,
+      "impact_coverage": "unknown",
+      "compaction_errors": 0,
+      "compaction_events": [],
+      "compaction_enabled": true,
+      "compaction_failures": [],
+      "compaction_requests": 0,
+      "output_budget_chars": 12000,
+      "total_model_requests": 2,
+      "requested_evidence_ids": [],
+      "compaction_proxy_errors": 0,
+      "compaction_native_errors": 0
+    },
+    "guards": {
+      "invalid_quote": 409,
+      "stale_approval": 409,
+      "unapproved_publication": 409
+    },
+    "business_counts_before": {
+      "publications": 0,
+      "knowledge_entries": 0
+    },
+    "business_counts_after": {
+      "publications": 0,
+      "knowledge_entries": 0
+    },
+    "notifications_sent": 0,
+    "review_url": "http://10.160.226.172/retrospective?incident_id=inc_4cb0dcb96ce44df38c0dd594069515b5",
+    "scope": "synthetic manual/log evidence; actual deployed Nginx/API/Celery/PG/DSH/Bailian writer and embedding; no real chat fetch, notification, approval or publication"
+  },
+  "offline_validation": {
+    "passed": 267,
+    "skipped": 0,
+    "existing_feishu_warnings": 2,
+    "real_sdk_mcp_cases": 20,
+    "model": "local SSE fixture",
+    "storage": "separate temporary pgvector"
+  },
+  "http_checks": {
+    "local_review": 200,
+    "current_wlan_review": 200,
+    "current_wlan_health": 200,
+    "old_wlan_address_changed": true,
+    "second_device_not_tested": true
+  },
+  "failures_and_fixes": [
+    "native convergence failures and reported summary usage were not counted; now recorded separately without double counting",
+    "chat search with no collected materials encouraged repeated queries; scope and retry hint added",
+    "real Writer omitted impact.citations; existing attempt limit now feeds schema errors back and records failed request usage",
+    "old WLAN review URL changed; API and Worker updated to current address"
+  ],
+  "limits": [
+    "synthetic materials only; no claim of production incident quality",
+    "no messages, approval or publication performed",
+    "early failed run 02 has incomplete summary usage",
+    "model can announce a tool without calling it (06), which was not accepted as a passed test",
+    "source ledger integrity does not guarantee summary prose faithfulness",
+    "stress uses a smaller declared capacity than normal deployed 32768 tokens"
+  ],
+  "final_checks": {
+    "markdown_files": 27,
+    "local_links": 350,
+    "git_diff_check": "passed",
+    "compose_config": "passed",
+    "worker_ping": "pong",
+    "api_health": 200,
+    "current_wlan_review": 200,
+    "api_postgres_redis": "healthy",
+    "temporary_test_database_and_network": "removed",
+    "credential_backups_gitignored": true
+  }
+}

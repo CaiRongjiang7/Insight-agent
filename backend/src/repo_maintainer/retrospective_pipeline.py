@@ -10,7 +10,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Any
 
-from .retrospective_connectors import CollaborationConnector, Embedder, GitContextConnector, ReviewGenerator
+from .retrospective_connectors import CollaborationConnector, Embedder, GenerationOutputError, GitContextConnector, ReviewGenerator
 from .retrospective_code_context import RepositoryCodeContext, RepositoryContextError
 from .retrospective_models import (
     ALLOWED_STATUS_TRANSITIONS,
@@ -57,7 +57,7 @@ class ContextSelector:
         EvidenceSource.HISTORICAL: 40,
     }
 
-    def __init__(self, budget_chars: int = 24_000, max_item_chars: int = 6_000) -> None:
+    def __init__(self, budget_chars: int = 600_000, max_item_chars: int = 60_000) -> None:
         self.budget_chars = max(budget_chars, 2_000)
         self.max_item_chars = max(max_item_chars, 500)
 
@@ -197,11 +197,7 @@ class QualityValidator:
         evidence_map = {item.id: item for item in evidence}
         raw_map = {item.id: item for item in raw_evidence or evidence}
         hard_errors: list[str] = []
-        citations = [
-            *(document.impact.citations or []),
-            *(document.root_cause.citations or []),
-            *(document.fix_solution.citations or []),
-        ]
+        citations = _document_citations(document)
         valid_count = 0
         for citation in citations:
             source = evidence_map.get(citation.evidence_id)
@@ -224,6 +220,20 @@ class QualityValidator:
         if covered < section_count:
             hard_errors.append("Impact, root cause and fix solution must each cite evidence")
         soft_warnings: list[str] = []
+        impact_sources = {evidence_map[c.evidence_id].source_type for c in document.impact.citations
+                          if c.evidence_id in evidence_map}
+        if document.impact.scope_basis == 'observed' and EvidenceSource.CI_LOG not in impact_sources:
+            hard_errors.append('Observed impact must cite a log observation; static code or statements are insufficient')
+        if document.impact.scope_basis == 'reported' and not impact_sources.intersection({
+            EvidenceSource.FEISHU_MESSAGE, EvidenceSource.FEISHU_DOC, EvidenceSource.GITHUB_PR,
+            EvidenceSource.GITHUB_COMMIT, EvidenceSource.MANUAL,
+        }):
+            hard_errors.append('Reported impact must cite a participant or document statement')
+        if document.impact.scope_basis == 'unknown':
+            soft_warnings.append('Impact basis is unknown; verify the reported/observed scope')
+        soft_warnings.append('Impact coverage is not exhaustive; unmentioned services are not excluded')
+        if document.impact.potential_impacts:
+            soft_warnings.append('Potential impacts require runtime verification; static relations are not incident facts')
         if not document.related_modules:
             soft_warnings.append("No related modules identified")
         if len(document.keywords) < 2:
@@ -275,6 +285,8 @@ class RetrospectivePipeline:
         default_feishu_chat_ids: list[str] | None = None,
         default_feishu_doc_tokens: list[str] | None = None,
         tools_enabled: bool = True,
+        investigation_runner=None,
+        review_notifier=None,
     ) -> None:
         self.store = store
         self.git = git
@@ -291,6 +303,9 @@ class RetrospectivePipeline:
         self.default_feishu_chat_ids = default_feishu_chat_ids or []
         self.default_feishu_doc_tokens = default_feishu_doc_tokens or []
         self.tools_enabled = tools_enabled
+        self.review_notifier = review_notifier
+        from .investigation_runner import StandardInvestigationRunner
+        self.investigation_runner = investigation_runner or StandardInvestigationRunner()
 
     def create_incident(self, payload: IncidentCreate) -> IncidentRecord:
         data = payload.model_dump()
@@ -307,7 +322,13 @@ class RetrospectivePipeline:
             request = build_request(incident, evidence, history)
             record_generation_context(self.store, incident, 'retrospective', request,
                                       scope='provider_request', evidence_ids=[e.id for e in evidence])
-            return generate_request(request)
+            try:
+                return generate_request(request)
+            except GenerationOutputError as exc:
+                record_generation_context(self.store, incident, 'generation_contract_failure', {
+                    'hard_errors': exc.hard_errors, 'usage': exc.metadata.model_dump(mode='json'),
+                }, scope='schema_validation_failure', evidence_ids=[e.id for e in evidence])
+                raise
         record_generation_context(self.store, incident, 'retrospective', {
             'incident': incident.model_dump(mode='json'),
             'evidence': [e.model_dump(mode='json') for e in evidence],
@@ -316,81 +337,17 @@ class RetrospectivePipeline:
         return self.generator.generate(incident, evidence, history)
 
     def _supports_tools(self) -> bool:
-        return self.tools_enabled and all(callable(getattr(self.generator, name, None))
-                                          for name in ('build_tool_request', 'request_tool_calls'))
+        return self.tools_enabled and self.investigation_runner.supports(self.generator)
 
     def _explore_tools(self, incident, raw_evidence, selected, history, code_session):
-        from .retrospective_tools import ToolExecutor
+        from .investigation_runner import InvestigationContext
 
-        run_id = new_id('toolrun')
-        requested: dict[str, str] = {}
-        current_call_id = ''
-        outcomes = []
-
-        def record_tool(event):
-            record_generation_context(self.store, incident, 'tool_execution', event,
-                                      run_id=run_id, call_id=current_call_id, scope='tool_result')
-            for item in event['result'].get('evidence', []):
-                requested[item['evidence_id']] = item['content']
-            outcomes.append({'tool': event['name'], 'status': event['result']['status'],
-                             'error': (event['result'].get('error') or {}).get('code', '')})
-
-        executor = ToolExecutor(
-            incident, raw_evidence, code_session=code_session,
+        return self.investigation_runner.run(InvestigationContext(
+            incident=incident, raw_evidence=raw_evidence, selected=selected, history=history,
+            store=self.store, generator=self.generator, code_session=code_session,
             history_search=lambda query, limit: self.search_knowledge(
                 query, repo_id=incident.repo_id, incident_type=incident.incident_type, limit=limit),
-            persist_evidence=self.store.add_evidence, recorder=record_tool,
-        )
-        messages = []
-        stop_reason = 'round_limit'
-        rounds = 0
-        error_type = ''
-        for round_index in range(2):
-            try:
-                request = self.generator.build_tool_request(incident, selected, history, messages, executor.definitions())
-            except Exception as exc:
-                stop_reason, error_type = 'model_error', type(exc).__name__
-                break
-            record_generation_context(self.store, incident, 'tool_exploration', request,
-                                      run_id=run_id, round=round_index + 1, scope='provider_request')
-            rounds += 1
-            try:
-                response = self.generator.request_tool_calls(request)
-                output = response.get('output', []) if isinstance(response, dict) else response.output
-                items = [item if isinstance(item, dict) else
-                         item.model_dump(mode='json', exclude_none=True) if hasattr(item, 'model_dump') else vars(item)
-                         for item in output]
-                # Convert SDK items once so persistence and replay see the same JSON.
-                items = json.loads(json.dumps(items, ensure_ascii=False))
-                calls = [item for item in items if item.get('type') == 'function_call']
-                call_ids = [item.get('call_id') for item in calls]
-                if any(not isinstance(cid, str) or not cid for cid in call_ids) or len(set(call_ids)) != len(call_ids):
-                    raise ValueError('Tool response has missing or duplicate call IDs')
-                if any(not isinstance(item.get('name'), str) for item in calls):
-                    raise ValueError('Tool response has an invalid function name')
-            except Exception as exc:
-                stop_reason, error_type = 'model_error', type(exc).__name__
-                break
-            record_generation_context(self.store, incident, 'tool_model_response', {'output': items},
-                                      run_id=run_id, round=round_index + 1, scope='model_output')
-            messages = [*request['input'], *items]
-            if not calls:
-                stop_reason = 'no_tool_calls'
-                break
-            for call in calls:
-                current_call_id = call['call_id']
-                result = executor.execute(call.get('name', ''), call.get('arguments', {}))
-                messages.append({'type': 'function_call_output', 'call_id': current_call_id,
-                                 'output': result.model_dump_json()})
-        summary = {
-            'run_id': run_id, 'rounds': rounds, 'calls_used': executor.calls_used,
-            'output_chars': executor.used_chars, 'stop_reason': stop_reason,
-            'requested_evidence_ids': list(requested), 'error_type': error_type,
-            'tool_outcomes': outcomes,
-        }
-        record_generation_context(self.store, incident, 'tool_exploration_summary', summary,
-                                  run_id=run_id, scope='exploration_summary')
-        return executor.added_evidence, executor.historical_hits, requested, summary
+        ))
 
     def ingest_github_webhook(
         self,
@@ -447,9 +404,12 @@ class RetrospectivePipeline:
 
     def run(self, incident_id: str) -> RetrospectiveVersion:
         incident = self.store.get_incident(incident_id)
+        feedback = self._review_feedback(incident)
         try:
             self._transition(incident, IncidentStatus.COLLECTING)
             incident = self.store.get_incident(incident_id)
+            if feedback:
+                incident = incident.model_copy(update={"metadata": {**incident.metadata, "review_feedback": feedback}})
             raw_evidence = self.git.collect(incident) + self.collaboration.collect(incident)
             with ExitStack() as resources:
                 session = None
@@ -462,8 +422,9 @@ class RetrospectivePipeline:
                             raw_evidence.extend(self.code_context.collect(incident, raw_evidence))
                     except RepositoryContextError as exc:
                         session = None
+                        current = self.store.get_incident(incident_id)
                         self.store.update_incident(
-                            incident_id, metadata={**incident.metadata, 'code_context_warning': str(exc)[:300]},
+                            incident_id, metadata={**current.metadata, 'code_context_warning': str(exc)[:300]},
                         )
                 return self._run_collected(incident, raw_evidence, session)
         except Exception as exc:
@@ -482,6 +443,12 @@ class RetrospectivePipeline:
         incident_id = incident.id
         if not raw_evidence:
             raise PipelineError("No source evidence was collected")
+        # Recollection must not overwrite a previous review's immutable source.
+        stored = {item.id: item for item in self.store.list_evidence(incident_id)}
+        def identity(item):
+            return (item.content, item.source_type, item.location, item.commit_sha, item.source_url, item.repo_id)
+        raw_evidence = [item.model_copy(update={"id": new_id("ev")})
+                        if item.id in stored and identity(stored[item.id]) != identity(item) else item for item in raw_evidence]
         self.store.add_evidence(raw_evidence)
         selection = self.selector.select(incident, raw_evidence)
         if not selection.evidence:
@@ -552,12 +519,20 @@ class RetrospectivePipeline:
                 generation_incident = incident.model_copy(update={
                     "metadata": {**incident.metadata, "generation_validation_errors": last_quality.hard_errors},
                 })
-            document, metadata = self._generate(generation_incident, selection.evidence, history)
+            try:
+                document, metadata = self._generate(generation_incident, selection.evidence, history)
+            except GenerationOutputError as exc:
+                last_quality = QualityReport(hard_errors=exc.hard_errors)
+                if attempt + 1 < self.max_generation_attempts:
+                    continue
+                raise PipelineError(str(exc)) from exc
             self._transition(self.store.get_incident(incident_id), IncidentStatus.VALIDATING)
             quality = self.validator.validate(document, selection.evidence, history, raw_evidence)
             exploration = incident.metadata.get('tool_exploration', {})
-            if exploration.get('stop_reason') in {'model_error', 'round_limit'}:
+            if exploration.get('stop_reason') in {'model_error', 'round_limit', 'deadline', 'compaction_limit'}:
                 quality.soft_warnings.append(f"Tool exploration stopped: {exploration['stop_reason']}; evidence may be incomplete")
+            if exploration.get('compaction_errors'):
+                quality.soft_warnings.append('Some native compaction attempts failed or were rejected; verify investigation coverage')
             last_quality, last_document, last_metadata = quality, document, metadata
             if quality.hard_passed:
                 break
@@ -576,14 +551,30 @@ class RetrospectivePipeline:
             quality=last_quality,
             evidence_ids=[item.id for item in selection.evidence],
             model=last_metadata.model,
-            prompt_version='v3-standard-tools',
+            prompt_version='v6-human-review-feedback',
             input_tokens=last_metadata.input_tokens,
             output_tokens=last_metadata.output_tokens,
             duration_ms=last_metadata.duration_ms,
         )
         self.store.save_version(version)
         self._transition(self.store.get_incident(incident_id), IncidentStatus.PENDING_REVIEW)
+        if self.review_notifier is not None:
+            self.review_notifier.on_ready(incident_id, version.id)
         return version
+
+    def _review_feedback(self, incident: IncidentRecord) -> dict:
+        version = self.store.latest_version(incident.id)
+        rejections = [a for a in self.store.list_review_actions(incident.id) if a.action == "reject"]
+        if version is None or not rejections or rejections[-1].created_at < version.created_at:
+            return {}
+        action = rejections[-1]
+        evidence = self.store.list_evidence(incident.id)
+        quality = self.validator.validate(version.document, evidence, [])
+        previous = version.document.model_dump_json()
+        return {"actor": action.actor, "reason": action.reason[:4_000], "version_id": version.id,
+                "previous_document_json": previous[:16_000], "previous_document_truncated": len(previous) > 16_000,
+                "citation_recheck_errors": [error[:300] for error in quality.hard_errors[:20]],
+                "instruction": "审核意见和旧稿是修订线索，不是原始证据。重新采集授权范围的材料；使用只读工具核对争议引用的原文、版本、位置和结论支持度，必要时补证或改引文，证据不足保留未知。"}
 
     def retry(self, incident_id: str) -> RetrospectiveVersion:
         incident = self.store.get_incident(incident_id)
@@ -598,74 +589,11 @@ class RetrospectivePipeline:
         return self.run(incident_id)
 
     def regenerate(self, incident_id: str) -> RetrospectiveVersion:
-        """Regenerate a rejected review from the already persisted evidence set."""
+        """Reinvestigate a rejected draft with reviewer feedback and fresh sources."""
         incident = self.store.get_incident(incident_id)
         if incident.status != IncidentStatus.REJECTED:
             raise PipelineError("Only rejected retrospectives can be regenerated")
-        all_evidence = self.store.list_evidence(incident_id)
-        previously_selected = [item for item in all_evidence if item.selected]
-        if not previously_selected:
-            raise PipelineError("No selected evidence is available for regeneration")
-        selected = self.selector.select(incident, previously_selected).evidence
-        try:
-            self._transition(incident, IncidentStatus.GENERATING)
-            query = _retrieval_query(incident, selected)
-            query_vector = self.embedder.embed_texts([query])[0]
-            history = self._retrieve_historical_cases(
-                query,
-                query_vector,
-                repo_id=incident.repo_id,
-                incident_type=incident.incident_type,
-                limit=self.top_k,
-            )
-            last_quality: QualityReport | None = None
-            last_document: RetrospectiveDocument | None = None
-            last_metadata = None
-            for attempt in range(self.max_generation_attempts):
-                current = self.store.get_incident(incident_id)
-                if current.status != IncidentStatus.GENERATING:
-                    self._transition(current, IncidentStatus.GENERATING)
-                generation_incident = incident
-                if last_quality is not None:
-                    generation_incident = incident.model_copy(update={
-                        "metadata": {**incident.metadata, "generation_validation_errors": last_quality.hard_errors},
-                    })
-                document, metadata = self._generate(generation_incident, selected, history)
-                self._transition(self.store.get_incident(incident_id), IncidentStatus.VALIDATING)
-                quality = self.validator.validate(document, selected, history, all_evidence)
-                last_quality, last_document, last_metadata = quality, document, metadata
-                if quality.hard_passed:
-                    break
-            if last_quality is None or last_document is None or last_metadata is None:
-                raise PipelineError("Generator did not return a retrospective")
-            if not last_quality.hard_passed:
-                raise PipelineError("; ".join(last_quality.hard_errors))
-            versions = self.store.list_versions(incident_id)
-            version = RetrospectiveVersion(
-                incident_id=incident_id,
-                version=len(versions) + 1,
-                document=last_document,
-                quality=last_quality,
-                evidence_ids=[item.id for item in selected],
-                model=last_metadata.model,
-                prompt_version='v3-standard-tools',
-                input_tokens=last_metadata.input_tokens,
-                output_tokens=last_metadata.output_tokens,
-                duration_ms=last_metadata.duration_ms,
-            )
-            self.store.save_version(version)
-            self._transition(self.store.get_incident(incident_id), IncidentStatus.PENDING_REVIEW)
-            return version
-        except Exception as exc:
-            current = self.store.get_incident(incident_id)
-            if current.status != IncidentStatus.FAILED:
-                self.store.update_incident(
-                    incident_id,
-                    status=IncidentStatus.FAILED,
-                    failed_stage=current.status.value,
-                    error=str(exc),
-                )
-            raise
+        return self.run(incident_id)
 
     def edit(self, incident_id: str, document: RetrospectiveDocument, actor: str) -> RetrospectiveVersion:
         incident = self.store.get_incident(incident_id)
@@ -702,16 +630,26 @@ class RetrospectivePipeline:
 
     def approve(self, incident_id: str, actor: str, reason: str = "") -> IncidentRecord:
         incident = self.store.get_incident(incident_id)
+        version = self.store.latest_version(incident_id)
+        if version is None:
+            raise PipelineError("No retrospective version exists")
+        quality = self.validator.validate(version.document, self.store.list_evidence(incident_id), [])
+        if not quality.hard_passed:
+            raise PipelineError("; ".join(quality.hard_errors))
         return self._transition(incident, IncidentStatus.APPROVED, actor=actor, action="approve", reason=reason)
 
     def reject(self, incident_id: str, actor: str, reason: str) -> IncidentRecord:
         if not reason.strip():
             raise PipelineError("Rejection reason is required")
+        if len(reason) > 4_000:
+            raise PipelineError("Review feedback must not exceed 4000 characters")
         incident = self.store.get_incident(incident_id)
         return self._transition(incident, IncidentStatus.REJECTED, actor=actor, action="reject", reason=reason)
 
     def publish(self, incident_id: str, actor: str) -> dict[str, Any]:
         incident = self.store.get_incident(incident_id)
+        if incident.status not in {IncidentStatus.APPROVED, IncidentStatus.PUBLISHED}:
+            raise PipelineError("Only approved retrospectives can be published")
         version = self.store.latest_version(incident_id)
         if version is None:
             raise PipelineError("No retrospective version exists")
@@ -741,6 +679,10 @@ class RetrospectivePipeline:
     def _index_published_version(
         self, incident: IncidentRecord, version: RetrospectiveVersion, publication: PublishResult
     ) -> str:
+        current = self.store.get_incident(incident.id)
+        latest = self.store.latest_version(incident.id)
+        if current.status not in {IncidentStatus.APPROVED, IncidentStatus.PUBLISHING} or latest is None or latest.id != version.id:
+            raise PipelineError("Only the current human-approved version can enter the knowledge base")
         sections = _knowledge_chunks(version.document)
         # Preserve the full card in storage while bounding each embedding input.
         embeddings = self.embedder.embed_texts([content[:4_000] for content, _ in sections])
@@ -751,7 +693,7 @@ class RetrospectivePipeline:
             version=version,
             publication=publication,
             chunks=[
-                (content, embedding, {**metadata, "format_version": "v3", "embedding_model": str(getattr(self.embedder, "model", ""))})
+                (content, embedding, {**metadata, "format_version": "v4-impact-coverage", "embedding_model": str(getattr(self.embedder, "model", ""))})
                 for (content, metadata), embedding in zip(sections, embeddings)
             ],
         )
@@ -945,27 +887,33 @@ def _normalize_quote(value: str) -> str:
 
 
 def _document_citations(document: RetrospectiveDocument) -> list[Citation]:
-    return [*document.impact.citations, *document.root_cause.citations, *document.fix_solution.citations]
+    return [*document.impact.citations, *document.root_cause.citations, *document.fix_solution.citations,
+            *[citation for candidate in document.impact.potential_impacts for citation in candidate.citations]]
 
 
 def _knowledge_chunks(document: RetrospectiveDocument) -> list[tuple[str, dict[str, Any]]]:
-    all_ids = sorted({item.evidence_id for item in _document_citations(document)})
+    # Unverified propagation candidates stay in the published review, outside
+    # factual history chunks. They must not become confirmed historical impact.
+    all_ids = sorted({item.evidence_id for item in [*document.impact.citations,
+                     *document.root_cause.citations, *document.fix_solution.citations]})
     impact_ids = sorted({item.evidence_id for item in document.impact.citations})
     cause_ids = sorted({item.evidence_id for item in document.root_cause.citations})
     fix_ids = sorted({item.evidence_id for item in document.fix_solution.citations})
     title = f"问题：{document.title}"
     modules = "、".join(document.related_modules)
+    impact = (f'{document.impact.scope}（{document.impact.severity}；依据 {document.impact.scope_basis}；'
+              f'覆盖 {document.impact.coverage}）\n覆盖说明：{document.impact.coverage_notes}')
     prevention = "；".join(document.prevention)
     sections = [
         (
             f"{title}\n根因：{document.root_cause.content}\n修复：{document.fix_solution.content}"
-            f"\n故障摘要：{document.summary}\n影响：{document.impact.scope}（{document.impact.severity}）"
+            f"\n故障摘要：{document.summary}\n影响：{impact}"
             f"\n预防：{prevention}\n模块：{modules}\n关键词：{'、'.join(document.keywords)}",
             {"section": "case_card", "source_evidence_ids": all_ids},
         ),
     ]
     section_bodies = [
-        ("symptoms", f"故障摘要：{document.summary}\n影响：{document.impact.scope}（{document.impact.severity}）\n模块：{modules}\n关键词：{'、'.join(document.keywords)}", impact_ids),
+        ("symptoms", f"故障摘要：{document.summary}\n影响：{impact}\n模块：{modules}\n关键词：{'、'.join(document.keywords)}", impact_ids),
         ("root_cause", f"根因：{document.root_cause.content}", cause_ids),
         ("fix_solution", f"修复：{document.fix_solution.content}", fix_ids),
         ("prevention", f"预防：{prevention}\n模块：{modules}", []),

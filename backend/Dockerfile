@@ -1,6 +1,7 @@
 FROM public.ecr.aws/docker/library/python:3.12-slim
 
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG INSTALL_HARNESS=0
 
 # Use Tsinghua University mirrors for Debian packages and Python dependencies.
 RUN set -eux; \
@@ -26,7 +27,8 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN pip install --upgrade pip && pip install .
+RUN pip install --upgrade pip && \
+    if [ "$INSTALL_HARNESS" = "1" ]; then pip install '.[harness]'; else pip install .; fi
 
 EXPOSE 8000
 

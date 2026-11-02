@@ -66,7 +66,7 @@ class RepositoryIndexer:
         graph_edges = []
 
         for path in root.rglob("*"):
-            if not path.is_file():
+            if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(root):
                 continue
             relative_parts = path.relative_to(root).parts
             if any(part in self.EXCLUDED_DIRS for part in relative_parts):

@@ -6,11 +6,11 @@ import hashlib
 import json
 import logging
 from datetime import datetime, timezone
-from urllib.parse import urlencode, urlsplit
 from uuid import NAMESPACE_URL, uuid5
 
 from .retrospective_feishu_commands import FEISHU_COMMAND_HELP, parse_feishu_command
 from .retrospective_models import IncidentRecord, IncidentStatus
+from .retrospective_notifications import review_link
 
 logger = logging.getLogger(__name__)
 TASK_NAME = "repo_maintainer.handle_feishu_command"
@@ -27,17 +27,6 @@ class FeishuIncidentBusy(RuntimeError):
 def incident_id_for(app_id: str, chat_id: str, message_id: str) -> str:
     identity = json.dumps([app_id, chat_id, message_id], separators=(",", ":"))
     return "inc_fs_" + hashlib.sha256(identity.encode()).hexdigest()[:32]
-
-
-def review_link(base_url: str, incident_id: str) -> str:
-    if not base_url.strip():
-        return "请在复盘工作台按事故 ID 查看。"
-    parsed = urlsplit(base_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
-        raise ValueError("REVIEW_PUBLIC_BASE_URL must be an HTTP(S) URL without credentials")
-    if parsed.query or parsed.fragment:
-        raise ValueError("REVIEW_PUBLIC_BASE_URL must not contain query or fragment")
-    return base_url.rstrip("/") + "/retrospective?" + urlencode({"incident_id": incident_id})
 
 
 def enqueue_feishu_event(payload: dict, *, queue, app_id: str, bot_open_id: str,
@@ -110,7 +99,8 @@ def process_feishu_event(payload: dict, *, bot_open_id: str, app_id: str,
         if incident.status in active:
             incident = pipeline.store.update_incident(identity, status=IncidentStatus.FAILED,
                 failed_stage="collecting", error="飞书任务执行中断，请在工作台检查证据后重试。")
-        if incident.status == IncidentStatus.RECEIVED:
+        was_received = incident.status == IncidentStatus.RECEIVED
+        if was_received:
             window = incident.metadata["feishu_window"]
             def local_time(value):
                 from .retrospective_feishu_commands import COMMAND_TIMEZONE
@@ -135,6 +125,11 @@ def process_feishu_event(payload: dict, *, bot_open_id: str, app_id: str,
             reply("failed", f"复盘生成失败。事故 ID：{identity}\n请在工作台查看原因、补充材料并重试。\n{link}", persist=True)
             return {"status": "failed", "incident_id": identity}
         pipeline.store.update_job(job_id, stage=incident.status.value, status="completed")
+        if getattr(pipeline, "review_notifier", None) is not None:
+            version = pipeline.store.latest_version(identity)
+            if version is not None and not was_received:
+                pipeline.review_notifier.on_ready(identity, version.id)
+            return {"status": incident.status.value, "incident_id": identity}
         reply("completed", f"复盘草稿已生成：{incident.title}\n事故 ID：{identity}\n"
               f"请在工作台核对证据、审核并发布。\n{link}", persist=True)
         return {"status": incident.status.value, "incident_id": identity}

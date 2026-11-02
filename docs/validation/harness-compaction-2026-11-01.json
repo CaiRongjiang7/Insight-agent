@@ -1,0 +1,114 @@
+{
+  "date": "2026-11-01",
+  "timezone": "Asia/Shanghai",
+  "branch": "codex/deepseek-harness-upgrade",
+  "baseline": "3af8ea8 + workspace",
+  "candidate_image": "e9f1f7dfe489",
+  "test_image": "e25d6d50be3a",
+  "package_versions": {
+    "deepseek-harness-sdk": "0.2.1rc2",
+    "deepseek-harness-runtime-bin": "0.2.1rc2",
+    "mcp": "2.3.0",
+    "pydantic": "2.14.2",
+    "fastapi": "0.162.0",
+    "starlette": "1.10.0",
+    "openai": "2.54.0"
+  },
+  "source_sha256": {
+    "retrospective_compaction.py": "0ad458fcd55422daf9a59df29009561f048bcacbf3b6a9439ebf1bce79e9e2e9",
+    "retrospective_mcp.py": "55ea82abd645f710c59ea61412e7033a72ab37b6137f53ade668a452f57cdeb8",
+    "retrospective_harness_state.py": "a5494eb04a203fddbf719a925e7026b5c2920e3f33cf72fca4cd40e9c9190184",
+    "retrospective_harness_trace.py": "ad4f5a025006c95c53e763b475009fb78ae94f8858be1787c9a22ae6e2173333",
+    "retrospective_tools.py": "7c22d973ae5ea12149bbcf885a6c413eacaa6ca3cd36938c23134be2ca25234f",
+    "deepseek_runner.py": "82cbf8cc362d2e2943f05f48ee170b27d7ea086e155bfc4a2d32719f80174fae"
+  },
+  "validation": {
+    "related_tests_passed": 261,
+    "skipped": 0,
+    "existing_feishu_deprecation_warnings": 2,
+    "additional_strengthened_limit_tests_passed": 2,
+    "real_sdk_mcp_tests": 20,
+    "new_native_compaction_tests": 10,
+    "model": "local synthetic SSE fixture",
+    "storage": [
+      "memory",
+      "isolated PostgreSQL/pgvector"
+    ],
+    "production_updates": false,
+    "new_cloud_model_requests": 0,
+    "compose_templates": [
+      "builtin",
+      "deepseek"
+    ],
+    "markdown_files_checked": 26,
+    "local_links_checked": 335,
+    "git_diff_check": "passed"
+  },
+  "latest_postgres_cases": {
+    "limit": {
+      "run_id": "toolrun_4cd94d7acdfd42ee9d79b45373602d72",
+      "exploration_requests": 3,
+      "compaction_requests": 1,
+      "total_model_requests": 4,
+      "compaction_errors": 1,
+      "native_summaries": 0,
+      "stop_reason": "compaction_limit",
+      "raw_evidence_count": 6
+    },
+    "disabled": {
+      "run_id": "toolrun_e006cfd0265b427fb090b58a49dbd528",
+      "exploration_requests": 3,
+      "compaction_requests": 0,
+      "total_model_requests": 3,
+      "compaction_errors": 0,
+      "native_summaries": 0,
+      "stop_reason": "no_tool_calls",
+      "raw_evidence_count": 6
+    },
+    "provider_failure": {
+      "run_id": "toolrun_cd207d91e2db46c99caf2b9ed26d7328",
+      "exploration_requests": 3,
+      "compaction_requests": 2,
+      "total_model_requests": 5,
+      "compaction_errors": 2,
+      "native_summaries": 0,
+      "stop_reason": "no_tool_calls",
+      "raw_evidence_count": 6
+    },
+    "invalid": {
+      "run_id": "toolrun_7b99a840cbc949dfa7fff42c05e60d14",
+      "exploration_requests": 3,
+      "compaction_requests": 2,
+      "total_model_requests": 5,
+      "compaction_errors": 2,
+      "native_summaries": 0,
+      "stop_reason": "no_tool_calls",
+      "raw_evidence_count": 6
+    },
+    "ok": {
+      "run_id": "toolrun_023eb41fba544c46bd4ec3c5f96c5f2a",
+      "exploration_requests": 3,
+      "compaction_requests": 1,
+      "total_model_requests": 4,
+      "compaction_errors": 0,
+      "native_summaries": 1,
+      "stop_reason": "no_tool_calls",
+      "raw_evidence_count": 6
+    }
+  },
+  "limits": {
+    "investigation_requests": 6,
+    "compaction_requests": 2,
+    "compaction_output_tokens": 2048,
+    "compaction_threshold": 0.8,
+    "compaction_headroom": 2048,
+    "retained_tail_ratio": 0.16,
+    "timeout_seconds": 60
+  },
+  "limitations": [
+    "provenance index integrity is not semantic faithfulness",
+    "real provider compaction quality and overflow recovery not evaluated",
+    "failed request usage may be incomplete",
+    "business restart recovery and Windows native binding remain unverified"
+  ]
+}

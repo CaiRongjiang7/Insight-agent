@@ -39,7 +39,7 @@ ALLOWED_STATUS_TRANSITIONS: dict[IncidentStatus, set[IncidentStatus]] = {
     IncidentStatus.GENERATING: {IncidentStatus.VALIDATING, IncidentStatus.FAILED},
     IncidentStatus.VALIDATING: {IncidentStatus.PENDING_REVIEW, IncidentStatus.GENERATING, IncidentStatus.FAILED},
     IncidentStatus.PENDING_REVIEW: {IncidentStatus.REJECTED, IncidentStatus.APPROVED},
-    IncidentStatus.REJECTED: {IncidentStatus.GENERATING, IncidentStatus.PENDING_REVIEW},
+    IncidentStatus.REJECTED: {IncidentStatus.COLLECTING, IncidentStatus.GENERATING, IncidentStatus.PENDING_REVIEW},
     IncidentStatus.APPROVED: {IncidentStatus.PUBLISHING},
     IncidentStatus.PUBLISHING: {IncidentStatus.PUBLISHED, IncidentStatus.APPROVED},
     IncidentStatus.PUBLISHED: set(),
@@ -95,13 +95,26 @@ class EvidenceBackedText(BaseModel):
     citations: list[Citation] = Field(min_length=1)
 
 
+class PotentialImpact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1, max_length=1500, description='静态关联或传播假设，必须写明成立条件，不是已发生影响')
+    status: Literal['unverified'] = 'unverified'
+    citations: list[Citation] = Field(min_length=1, max_length=8)
+    verification_needed: str = Field(min_length=1, max_length=1500, description='确认或排除该候选所需的运行环境、时间窗、日志/指标/Trace/部署验证')
+
+
 class ImpactSection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    scope: str = Field(min_length=1)
+    scope: str = Field(min_length=1, description='仅描述材料已观测或参与者已报告的现象/影响，未知明确写未知，不混入静态候选')
     severity: Literal["P0", "P1", "P2", "P3"] = "P2"
     affected_users: str | None = None
     citations: list[Citation] = Field(min_length=1)
+    scope_basis: Literal['observed', 'reported', 'unknown'] = Field(default='unknown', description='日志中的局部观测/参与者或文档报告/未知；不表示人工已确认')
+    coverage: Literal['partial', 'unknown'] = Field(default='unknown', description='目前不能证明全量影响范围；材料缺少不等于没有影响')
+    coverage_notes: str = Field(default='现有材料未证明影响范围完整；未提及不代表未受影响。', min_length=1, max_length=1500)
+    potential_impacts: list[PotentialImpact] = Field(default_factory=list, max_length=8, description='单列待验证候选及验证方式，不能写入已报告影响范围')
 
 
 class RetrospectiveDocument(BaseModel):

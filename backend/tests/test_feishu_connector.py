@@ -49,6 +49,21 @@ class FeishuConnectorTests(unittest.TestCase):
         self.assertEqual(args[2]["uuid"], "stable-reply-uuid")
         self.assertEqual(result["data"]["message_id"], "om_reply")
 
+    def test_review_message_targets_chat_and_uses_stable_uuid(self):
+        self.http.return_value = {"code": 0, "data": {"message_id": "om_review"}}
+        self.connector.send_text("oc-review", "请审核 https://review.test/retrospective", "review-uuid")
+        args = self.http.call_args.args
+        self.assertEqual(args[:2], ("POST", "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"))
+        self.assertEqual(args[2]['receive_id'], 'oc-review')
+        self.assertEqual(args[2]['uuid'], 'review-uuid')
+        self.assertIn('请审核', json.loads(args[2]['content'])['text'])
+
+    def test_manual_window_stays_anchored_to_creation_time_during_later_review(self):
+        created = datetime(2026, 10, 21, 10, tzinfo=timezone.utc)
+        incident = IncidentRecord(title='test', created_at=created.isoformat())
+        self.assertEqual(_incident_time_window(incident), (int((created - timedelta(days=3)).timestamp()),
+                                                         int((created + timedelta(days=1)).timestamp())))
+
     def test_collect_uses_window_and_excludes_own_bot_and_duplicate_trigger(self):
         incident = IncidentRecord(
             title="配置复盘", source_type="feishu_message", feishu_chat_ids=["oc_test"],

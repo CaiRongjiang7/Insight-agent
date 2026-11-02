@@ -10,7 +10,7 @@
 
 ### 复盘材料与引用核对
 
-左侧查看结构化复盘中的摘要、影响范围、根因和修复方案，右侧逐条核对结论引用的原文与来源。待审核时可编辑 JSON、保存人工版本，并通过或驳回；下图展示已审核的人工版本。质量分与引用匹配不能代替事实审核。
+左侧查看结构化复盘中的摘要、影响范围、根因和修复方案，右侧逐条核对结论引用的原文与来源。待审核时可编辑 JSON、保存人工版本，并通过或驳回；也可填写审核意见交给 Agent 重新取证修订，新版仍须人工审核；下图展示已审核的人工版本。质量分与引用匹配不能代替事实审核。
 
 ![核心复盘页面：结构化复盘 JSON、质量分及原文引用核对](docs/images/retrospective-review.jpg)
 
@@ -34,9 +34,15 @@
 
 ## 当前实现与演练记录
 
+2026-11-01 最新升级：调查/摘要/独立 Writer 已切换百炼 `deepseek-v4.1-flash-1017`，上下文声明 1M，探索最多40请求/80工具，摘要16K Token；同步扩大初始/工具/Writer选材、代理字节和等待预算。275项回归及实际部署通过；真实模型完成12探索/11工具/一次3,374Token摘要，长材料合成稿停在待审核，未发通知或入历史库。参数、兼容及未测满窗口的边界见[长上下文升级](docs/long-context-model-upgrade.md)与[实测](docs/validation/long-context-live-2026-11-01.md)。以下保留各阶段当时的配置与结果。
+
+2026-11-01 继续接入 [DSH 原生会话压缩](docs/harness-native-compaction.md)：原生插件负责压力/选区/摘要/替换，业务侧校验来源索引、保存原文与审核边界；探索默认 6 次请求，压缩另至多 2 次/每次 2,048 Token。仅 deepseek + Chat Completions 默认开启，`REVIEW_HARNESS_COMPACTION_ENABLED=0` 可回退。后续已按用户要求[真实部署并验收](docs/validation/harness-compaction-live-2026-11-01.md)：当前本机显式 deepseek，实际 API 容器的真实 qwen3.7-flash 完成 6 次探索/1 次压缩/5 次工具，实际 Celery/Writer 生成合成待审核稿，历史库未写入。真实失败还促成原生失败/用量追踪、零素材范围说明和 Writer 结构错误有界反馈修复；267 项回归通过。后续所有升级须按 AGENTS.md 完成真实模型与部署测试。
+
+2026-10-31 在 `codex/deepseek-harness-upgrade` 接入可选 DeepSeek Harness 调查运行器：默认仍为 `builtin`，显式 `deepseek` 通过本机 MCP 调用原三工具；后续[搜索与影响策略](docs/repository-search-impact-strategy.md)增加快照找文件、字面量搜索和按行读取，共六工具，默认 6 次模型请求/12 次工具执行/12,000 返回字符/60 秒；复盘单列观测/报告、覆盖缺口和带验证方式的未验证候选，并在模型代理处先保存请求、再按轮次/输出额度转发。Writer、引文校验、审核发布保持原链路。用户授权后，百炼 `qwen3.7-flash` 的两轮真实合成请求与一次 MCP 补证通过；实际轨迹发现的调用 ID 字段映射已修复并离线回放验证，未追加云端请求。可选依赖、镜像、回退、验证边界和待实现的恢复能力见[接入与验收说明](docs/deepseek-harness-upgrade.md)。本次没有更新已运行的服务。
+
 2026-10-30 默认窗口调整：省略“时间：”时取当前群消息发送前 **24 小时**；可另起一行指定同日或跨日范围，最长 72 小时。55 项相关回归通过，示例见[时间窗口输入](docs/feishu-bot-setup.md#指定时间窗口)。
 
-2026-10-29 新增飞书显式触发入口：配置群内发送 `@机器人 复盘 <标题>`，可附服务、环境和时间。官方 SDK 长连接接收，不需要公网入口；Worker 异步生成、回复状态，最终仍需人工审核。默认仅取当前群前 24 小时，最长 72 小时；无需 PR，消息级去重并共享执行锁。可选 `feishu-bot` Compose profile 启动，新增 SDK 依赖与可选 `REVIEW_PUBLIC_BASE_URL`。权限、订阅、部署及验收见[飞书入口说明](docs/feishu-bot-setup.md)；工作区实现与真实平台联通分别验收。
+2026-10-29 新增飞书显式触发入口：配置群内发送 `@机器人 复盘 <标题>`，可附服务、环境和时间。官方 SDK 长连接接收，不需要公网入口；Worker 异步生成、回复状态，最终仍需人工审核。默认仅取当前群前 24 小时，最长 72 小时；无需 PR，消息级去重并共享执行锁。可选 `feishu-bot` Compose profile 启动，新增 SDK 依赖；审核群提醒须配置 `REVIEW_PUBLIC_BASE_URL`。权限、订阅、部署及验收见[飞书入口说明](docs/feishu-bot-setup.md)；工作区实现与真实平台联通分别验收。
 
 2026-10-30：151 项相关回归（含隔离 PostgreSQL）全部通过，前端构建通过。本机服务和 Listener 已部署，飞书长连接验证成功、消息订阅版本 1.0.3 已发布；用户真实 @“复盘帮助”收到回复。完整生成目前通过 Mock 集成验证，本次没有真实调用百炼生成或发布 Wiki。
 
@@ -231,10 +237,12 @@ docker compose --env-file .env up -d --force-recreate api worker
 1. 在 GitHub 仓库配置 `pull_request` Webhook 和相同的 Secret；只有 `closed + merged=true` 会创建任务。
 2. 或在“核心复盘”页面手工创建问题，然后点击“运行链路”。
 3. Worker 收集并保存原始 Evidence，只把经过选择和裁剪的片段送入模型。
-4. 在复盘页面查看质量分、风险提示和引用证据，必要时编辑 JSON 并保存人工版本。
-5. 执行“通过”；驳回时必须填写原因。
-6. 只有 `approved` 版本可以发布。发布成功后保存飞书 URL，并创建可检索知识条目。
+4. 草稿生成及 Agent 修订完成后，向事故指定飞书群发送待审核通知，附直达该事故的网页链接；飞书发起的事故只通知原群。必须为 API/Worker 配置相同的 `REVIEW_PUBLIC_BASE_URL=https://review.example.com`（根地址，不含 `/retrospective`），群由问题 `feishu_chat_ids` 或默认 `FEISHU_CHAT_IDS` 指定。发送失败不影响草稿，后台独立重试，页面提示并提供手工重试。
+5. 在复盘页面核对结论与引用，可直接编辑 JSON 并“保存人工版本”，也可填写审核意见后点“提交意见并交给 Agent 修订”。Agent 异步重新采集授权范围材料，使用现有只读工具核对争议引用，再生成新待审核版本；意见和旧稿不作为原始 Evidence。页面自动刷新进度，审核记录可回查。执行“审核通过”前须保存修改；驳回必须填写原因。
+6. 只有人工审核通过的 `approved` 版本可以“发布并写入知识库”。原始证据、请求快照和草稿会先留存用于审核；待审核、驳回或修订中的复盘不会进入历史知识库，发布成功后才保存飞书 URL 并创建可检索案例。
 7. 使用 `GET /api/retrospective/knowledge/search?q=...` 验证新案例召回。
+
+2026-11-01 已更新本机 API、Worker、前端和 Listener，完成真实模型生成/意见修订、两条飞书待审核通知回读及用户局域网链接确认。保持 builtin，实配 OPENAI_ENABLE_THINKING=false；合成联调最终 v4 仍待审核、未发布或写入知识。详见[真实部署与联调](docs/validation/review-loop-live-2026-11-01.md)。升级须同步更新 API/Worker/前端，没有新表或依赖；真实模型输出的来源属性仍需人工校对，不能替代审核。
 
 ## 核心 API
 
@@ -243,9 +251,11 @@ docker compose --env-file .env up -d --force-recreate api worker
 | `POST /webhooks/github` | GitHub merged PR 入口、验签与 delivery 幂等 |
 | `POST /api/retrospective/incidents` | 手工创建问题 |
 | `POST /api/retrospective/incidents/{id}/run` | 投递 Celery 主流程 |
-| `POST /api/retrospective/incidents/{id}/regenerate` | 驳回后基于已保存 Evidence 重新生成 |
+| `POST /api/retrospective/incidents/{id}/regenerate` | 同步兼容接口：携带驳回意见、重取证后生成 |
+| `POST /api/retrospective/incidents/{id}/revise` | 异步 Agent 修订；必填 reason、version_id，可传 actor，返回 202/job_id |
+| `POST /api/retrospective/incidents/{id}/notify-review` | 重试当前版本待审核群通知 |
 | `GET /api/retrospective/incidents/{id}` | 问题、Evidence、版本和审核历史 |
-| `PATCH /api/retrospective/incidents/{id}/document` | 保存人工修改版本 |
+| `PATCH /api/retrospective/incidents/{id}/document` | 保存人工版本，页面传 version_id 防止覆盖新稿 |
 | `POST .../{id}/approve` / `reject` | 审核操作 |
 | `POST .../{id}/publish` | 发布飞书并回流知识库 |
 | `GET /api/retrospective/knowledge/search` | 混合检索已发布知识 |

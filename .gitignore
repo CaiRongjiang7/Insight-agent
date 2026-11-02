@@ -10,4 +10,5 @@ backend/.pytest_cache/
 frontend/dist/
 backend/.test_runs/
 backend/runtime/
+runtime/harness/
 蔡荣江-简历-4.docx

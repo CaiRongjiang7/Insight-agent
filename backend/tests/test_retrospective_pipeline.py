@@ -501,7 +501,7 @@ class RetrospectivePipelineTests(unittest.TestCase):
             {item["metadata"]["section"] for item in store._knowledge},
             {"case_card", "symptoms", "root_cause", "fix_solution", "prevention"},
         )
-        self.assertTrue(all(item["metadata"]["format_version"] == "v3" for item in store._knowledge))
+        self.assertTrue(all(item["metadata"]["format_version"] == "v4-impact-coverage" for item in store._knowledge))
         self.assertEqual(len(hits), 2)
         self.assertEqual(len({item.knowledge_id for item in hits}), 2)
         for hit in hits:
